@@ -1,0 +1,10 @@
+[package]
+name = "qweb-inherit"
+description = "Odoo template inheritance (xpath specs) on the qweb-core XML tree"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+qweb-core.workspace = true
+regex-lite = "0.1"

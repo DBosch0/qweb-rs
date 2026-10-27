@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = ["crates/qweb-core", "crates/qweb-value", "crates/qweb-inherit", "crates/qweb-python", "crates/qweb-wasm"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "LGPL-3.0-only"
+
+[workspace.dependencies]
+qweb-core = { path = "crates/qweb-core" }
+qweb-value = { path = "crates/qweb-value" }
+qweb-inherit = { path = "crates/qweb-inherit" }
+memchr = "2.8"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+[profile.bench]
+lto = "fat"
+codegen-units = 1
+
+# Size-optimized WebAssembly build: cargo build --profile wasm --target wasm32-unknown-unknown -p qweb-wasm
+[profile.wasm]
+inherits = "release"
+opt-level = "s"
+panic = "abort"
+strip = true

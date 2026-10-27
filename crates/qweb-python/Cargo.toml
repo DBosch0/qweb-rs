@@ -1,0 +1,17 @@
+[package]
+name = "qweb-python"
+description = "Python bindings for qweb-core (drop-in replacement for Odoo's ir.qweb rendering)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "_qweb_rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+qweb-core.workspace = true
+qweb-inherit.workspace = true
+# `extension-module` is enabled by maturin (pyproject.toml), not here: forcing it
+# breaks linking of `cargo test` binaries on macOS.
+pyo3 = { version = "0.30", features = ["abi3-py312", "py-clone"] }

@@ -1,0 +1,2006 @@
+[
+ {
+  "name": "trivial",
+  "templates": {
+   "main": "<t t-name=\"main\"><div>Hello</div></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div>Hello</div>"
+ },
+ {
+  "name": "static_attrs",
+  "templates": {
+   "main": "<t t-name=\"main\"><div class=\"a &amp; b\" id=\"x\" data-x=\"&quot;q&apos;\"><span/><br/><img src=\"x\"/></div></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div class=\"a &amp; b\" id=\"x\" data-x=\"&#34;q&#39;\"><span></span><br/><img src=\"x\"/></div>"
+ },
+ {
+  "name": "static_text_entities",
+  "templates": {
+   "main": "<t t-name=\"main\"><p>&amp;lt; &gt; &#233; &#x1F600; <![CDATA[<raw & stuff>]]></p></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<p>&lt; > é 😀 <raw & stuff></p>"
+ },
+ {
+  "name": "root_not_t",
+  "templates": {
+   "main": "<div t-name=\"main\" class=\"root\"><p>x</p></div>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div class=\"root\"><p>x</p></div>"
+ },
+ {
+  "name": "root_whitespace",
+  "templates": {
+   "main": "<t t-name=\"main\">\n\n\n    <div>a</div>\n    <div>b</div>\n</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "\n    <div>a</div>\n    <div>b</div>"
+ },
+ {
+  "name": "root_whitespace2",
+  "templates": {
+   "main": "<t t-name=\"main\">\n  \n\t\n    <div>a</div>\n\n</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "\n    <div>a</div>"
+ },
+ {
+  "name": "void_elements",
+  "templates": {
+   "main": "<t t-name=\"main\"><br/><hr></hr><input value=\"1\"/><meta/><link/><div/><span></span></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<br/><hr/><input value=\"1\"/><meta/><link/><div></div><span></span>"
+ },
+ {
+  "name": "comments_dropped",
+  "templates": {
+   "main": "<t t-name=\"main\"><div><!-- c -->a<!--d-->b</div></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div>ab</div>"
+ },
+ {
+  "name": "comments_kept",
+  "templates": {
+   "main": "<t t-name=\"main\"><div><!-- c -->a<!--d-->b<?pi x y?></div></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {
+   "preserve_comments": true
+  },
+  "native": true,
+  "output": "<div><!-- c -->a<!--d-->b<?pi x y?></div>"
+ },
+ {
+  "name": "translate_suffix_static",
+  "templates": {
+   "main": "<t t-name=\"main\"><img alt.translate=\"Alt\" title=\"t\" title.translate=\"T2\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<img title=\"T2\" alt=\"Alt\"/>"
+ },
+ {
+  "name": "unknown_directive",
+  "templates": {
+   "main": "<t t-name=\"main\"><span t-esc=\"1\">x</span><span t-raw=\"2\"/><span t-value=\"3\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<span>x</span><span></span><span></span>"
+ },
+ {
+  "name": "special_attrs",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-translation=\"off\" t-ignore=\"1\" name=\"n\" id=\"i\">x</div></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div name=\"n\" id=\"i\">x</div>"
+ },
+ {
+  "name": "t_tag_alone",
+  "templates": {
+   "main": "<t t-name=\"main\"><t>a</t><t><t>b</t></t></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "ab"
+ },
+ {
+  "name": "nested_static",
+  "templates": {
+   "main": "<t t-name=\"main\"><ul><li>1</li><li>2</li></ul>\n<p>  spaced  </p></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<ul><li>1</li><li>2</li></ul>\n<p>  spaced  </p>"
+ },
+ {
+  "name": "out_basic",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-out=\"a\">Default</div></t>"
+  },
+  "main": "main",
+  "values": {
+   "a": 1
+  },
+  "options": {},
+  "native": true,
+  "output": "<div>1</div>"
+ },
+ {
+  "name": "out_escape",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-out=\"a\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "a": "<b>\"x\" & 'y'</b>"
+  },
+  "options": {},
+  "native": true,
+  "output": "<div>&lt;b&gt;&#34;x&#34; &amp; &#39;y&#39;&lt;/b&gt;</div>"
+ },
+ {
+  "name": "out_markup",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-out=\"a\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "a": {
+    "$markup": "<b>bold</b>"
+   }
+  },
+  "options": {},
+  "native": true,
+  "output": "<div><b>bold</b></div>"
+ },
+ {
+  "name": "out_none_default",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-out=\"a\">Default</div><span t-out=\"b\"/>|</t>"
+  },
+  "main": "main",
+  "values": {
+   "a": null,
+   "b": null
+  },
+  "options": {},
+  "native": true,
+  "output": "<div>Default</div>|"
+ },
+ {
+  "name": "out_false",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-out=\"a\">Default</div><span t-out=\"a\"/>|</t>"
+  },
+  "main": "main",
+  "values": {
+   "a": false
+  },
+  "options": {},
+  "native": true,
+  "output": "<div>Default</div>|"
+ },
+ {
+  "name": "out_zero_empty",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-out=\"a\">D</div><div t-out=\"b\">D</div></t>"
+  },
+  "main": "main",
+  "values": {
+   "a": 0,
+   "b": ""
+  },
+  "options": {},
+  "native": true,
+  "output": "<div>0</div><div></div>"
+ },
+ {
+  "name": "out_missing",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-out=\"missing\">D</div></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div>D</div>"
+ },
+ {
+  "name": "out_on_t",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"a\"/><t t-out=\"b\">def</t></t>"
+  },
+  "main": "main",
+  "values": {
+   "a": "x<"
+  },
+  "options": {},
+  "native": true,
+  "output": "x&lt;def"
+ },
+ {
+  "name": "out_types",
+  "templates": {
+   "main": "<t t-name=\"main\"><i t-out=\"1.5\"/><i t-out=\"1e20\"/><i t-out=\"0.1+0.2\"/><i t-out=\"True\"/><i t-out=\"[1, 'a']\"/><i t-out=\"(1,)\"/><i t-out=\"{'a': 1}\"/><i t-out=\"10 / 4\"/><i t-out=\"7 // 2\"/><i t-out=\"-7 % 3\"/><i t-out=\"2 ** 10\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<i>1.5</i><i>1e+20</i><i>0.30000000000000004</i><i>True</i><i>[1, &#39;a&#39;]</i><i>(1,)</i><i>{&#39;a&#39;: 1}</i><i>2.5</i><i>3</i><i>2</i><i>1024</i>"
+ },
+ {
+  "name": "out_default_value",
+  "templates": {
+   "main": "<t t-name=\"main\">\n                <span rows=\"10\" t-out=\"a\">\n                    DEFAULT\n                    <t t-out=\"'Text'\" />\n                </span>\n            </t>"
+  },
+  "main": "main",
+  "values": {
+   "a": "Hello"
+  },
+  "options": {},
+  "native": true,
+  "output": "\n                <span rows=\"10\">Hello</span>"
+ },
+ {
+  "name": "out_default_value2",
+  "templates": {
+   "main": "<t t-name=\"main\">\n                <span rows=\"10\" t-out=\"a\">\n                    DEFAULT\n                    <t t-out=\"'Text'\" />\n                </span>\n            </t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "\n                <span rows=\"10\">\n                    DEFAULT\n                    Text\n                </span>"
+ },
+ {
+  "name": "out_empty_expr",
+  "templates": {
+   "main": "<t t-name=\"main\"><span t-out=\"\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<span>()</span>"
+ },
+ {
+  "name": "out_dynamic_attrs",
+  "templates": {
+   "main": "<t t-name=\"main\"><span class=\"c\" t-att-id=\"i\" t-out=\"v\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "i": 3,
+   "v": "x"
+  },
+  "options": {},
+  "native": true,
+  "output": "<span class=\"c\" id=\"3\">x</span>"
+ },
+ {
+  "name": "out_dynamic_attrs_default",
+  "templates": {
+   "main": "<t t-name=\"main\"><span class=\"c\" t-att-id=\"i\" t-out=\"v\">def</span><b t-att-x=\"1\" t-out=\"v\"/>|</t>"
+  },
+  "main": "main",
+  "values": {
+   "i": 3,
+   "v": null
+  },
+  "options": {},
+  "native": true,
+  "output": "<span class=\"c\" id=\"3\">def</span>|"
+ },
+ {
+  "name": "if_basic",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-if=\"a\">yes</div><div t-if=\"not a\">no</div></t>"
+  },
+  "main": "main",
+  "values": {
+   "a": true
+  },
+  "options": {},
+  "native": true,
+  "output": "<div>yes</div>"
+ },
+ {
+  "name": "if_elif_else",
+  "templates": {
+   "main": "<t t-name=\"main\">\n    <t t-foreach=\"[1, 2, 3]\" t-as=\"i\">\n        <p t-if=\"i == 1\">one</p>\n        <p t-elif=\"i == 2\">two</p>\n        <p t-else=\"\">other</p>\n    </t>\n</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "\n        <p>one</p>\n        <p>two</p>\n        <p>other</p>"
+ },
+ {
+  "name": "if_spaces",
+  "templates": {
+   "main": "<t t-name=\"main\">\n                <div>\n                    0\n                    <t>1</t>\n                    <t t-if=\"True\">2</t>\n                    <t>3</t>\n                    4\n                    <t>5</t>\n                    6\n                    <t t-if=\"True\">7</t>\n                    8\n                    <t t-if=\"False\">9</t>\n                    10\n                    <t t-if=\"False\">11</t>\n                    <t t-else=\"\">12</t>\n                    13\n                </div>\n            </t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "\n                <div>\n                    0\n                    1\n                    2\n                    3\n                    4\n                    5\n                    6\n                    7\n                    8\n                    10\n                    12\n                    13\n                </div>"
+ },
+ {
+  "name": "if_comment",
+  "templates": {
+   "main": "<t t-name=\"main\">\n                <div>\n                    <!-- comment 0 -->\n                    0\n                    <div>1</div>\n                    <!-- comment 1 -->\n                    <div t-if=\"True\">2 (t-if)</div>\n                    <!-- comment 2 -->\n                    <div t-else=\"\">3 (t-else)</div>\n                    <!-- comment 3 -->\n                    <div>4</div>\n                    <!-- comment 4 -->\n                    <div t-if=\"False\">5 (t-if)</div>\n                    <!-- comment 5 -->\n                    <div t-else=\"\">6 (t-else)</div>\n                    <!-- comment 6 -->\n                    <div>7</div>\n                </div>\n            </t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "\n                <div>\n                    \n                    0\n                    <div>1</div>\n                    \n                    <div>2 (t-if)</div>\n                    \n                    \n                    <div>4</div>\n                    \n                    <div>6 (t-else)</div>\n                    \n                    \n                    <div>7</div>\n                </div>"
+ },
+ {
+  "name": "if_comment_preserved",
+  "templates": {
+   "main": "<t t-name=\"main\">\n    <div t-if=\"False\">a</div>\n    <!-- c1 -->\n    <div t-else=\"\">b</div>\n    tail\n</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {
+   "preserve_comments": true
+  },
+  "native": true,
+  "output": "\n    <div>b</div><!-- c1 -->\n    \n    tail"
+ },
+ {
+  "name": "if_t_text_newline",
+  "templates": {
+   "main": "<t t-name=\"main\">a\n  <t t-if=\"x\">\n    yes\n  </t>\n  b</t>"
+  },
+  "main": "main",
+  "values": {
+   "x": true
+  },
+  "options": {},
+  "native": true,
+  "output": "a\n    yes\n  b"
+ },
+ {
+  "name": "if_t_text_newline_false",
+  "templates": {
+   "main": "<t t-name=\"main\">a\n  <t t-if=\"x\">\n    yes\n  </t>\n  b</t>"
+  },
+  "main": "main",
+  "values": {
+   "x": false
+  },
+  "options": {},
+  "native": true,
+  "output": "a\n  b"
+ },
+ {
+  "name": "if_dollar_quirk",
+  "templates": {
+   "main": "<t t-name=\"main\">a\n  \n<t t-if=\"1\">b</t></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "a\n  b"
+ },
+ {
+  "name": "if_else_on_same_node",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-set=\"check\" t-value=\"1\"/>\n<section t-if=\"False\">10</section>\n<span t-elif=\"check == 1\" t-foreach=\"range(3)\" t-as=\"check\" t-out=\"check\"/>\n\n<section t-if=\"False\">10</section>\n<div t-else=\"\" t-if=\"check == 1\" t-foreach=\"range(3)\" t-as=\"check\" t-out=\"check\"/>\n</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "\n<span>0</span><span>1</span><span>2</span>\n<div>1</div>"
+ },
+ {
+  "name": "if_else_text_between",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-if=\"a\">x</t> y <t t-else=\"\">z</t></t>"
+  },
+  "main": "main",
+  "values": {
+   "a": 1
+  },
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "SyntaxError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "else_without_if",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-else=\"\">z</t></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "SyntaxError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "if_empty_expr",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-if=\"\">x</t>y</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "y"
+ },
+ {
+  "name": "if_space_expr",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-if=\" \">x</t></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "AssertionError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "if_chain_many",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"range(5)\" t-as=\"n\">\n  <b t-if=\"n == 0\">zero</b>\n  <b t-elif=\"n == 1\">one</b>\n  <!-- c -->\n  <b t-elif=\"n == 2\">two</b>\n  <b t-elif=\"n == 3\">three</b>\n  <b t-else=\"\">many</b>\n</t></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "\n  <b>zero</b>\n  \n  <b>one</b>\n  \n  <b>two</b>\n  \n  <b>three</b>\n  \n  <b>many</b>\n  "
+ },
+ {
+  "name": "if_and_or_values",
+  "templates": {
+   "main": "<t t-name=\"main\"><i t-out=\"a and b\"/><i t-out=\"a or b\"/><i t-out=\"b or c\"/><i t-out=\"not a\"/><i t-out=\"1 if a else 2\"/><i t-out=\"1 &lt; 2 &lt; 3\"/><i t-out=\"3 &gt; 2 == 2\"/><i t-out=\"a is None\"/><i t-out=\"c is not None\"/><i t-out=\"'x' in 'xyz'\"/><i t-out=\"2 not in [1,2]\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "a": "A",
+   "b": "",
+   "c": 0
+  },
+  "options": {},
+  "native": true,
+  "output": "<i></i><i>A</i><i>0</i><i>1</i><i>True</i><i>True</i><i>True</i><i>True</i>"
+ },
+ {
+  "name": "foreach_list",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"items\" t-as=\"i\"><span t-out=\"i\"/>,</t></t>"
+  },
+  "main": "main",
+  "values": {
+   "items": [
+    1,
+    "a",
+    2.5
+   ]
+  },
+  "options": {},
+  "native": true,
+  "output": "<span>1</span>,<span>a</span>,<span>2.5</span>,"
+ },
+ {
+  "name": "foreach_vars",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"items\" t-as=\"i\">\n    [<t t-out=\"i\"/>|<t t-out=\"i_index\"/>|<t t-out=\"i_value\"/>|<t t-out=\"i_size\"/>|<t t-out=\"i_first\"/>|<t t-out=\"i_last\"/>|<t t-out=\"i_odd\"/>|<t t-out=\"i_even\"/>|<t t-out=\"i_parity\"/>]\n</t></t>"
+  },
+  "main": "main",
+  "values": {
+   "items": [
+    "a",
+    "b",
+    "c"
+   ]
+  },
+  "options": {},
+  "native": true,
+  "output": "\n    [a|0|a|3|True||0|True|even]\n    [b|1|b|3|||1||odd]\n    [c|2|c|3||True|0|True|even]"
+ },
+ {
+  "name": "foreach_dict",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"d\" t-as=\"k\"><t t-out=\"k\"/>=<t t-out=\"k_value\"/>;</t></t>"
+  },
+  "main": "main",
+  "values": {
+   "d": {
+    "a": 1,
+    "b": 2
+   }
+  },
+  "options": {},
+  "native": true,
+  "output": "a=1;b=2;"
+ },
+ {
+  "name": "foreach_int",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"3\" t-as=\"i\"><t t-out=\"i\"/></t>|<t t-foreach=\"n\" t-as=\"j\"><t t-out=\"j\"/><t t-out=\"j_last\"/></t></t>"
+  },
+  "main": "main",
+  "values": {
+   "n": 2
+  },
+  "options": {},
+  "native": true,
+  "output": "012|01True"
+ },
+ {
+  "name": "foreach_empty",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"[]\" t-as=\"i\">x</t><t t-foreach=\"None\" t-as=\"i\">y</t><t t-foreach=\"missing\" t-as=\"i\">z</t>|</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "|"
+ },
+ {
+  "name": "foreach_leak",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"[1,2]\" t-as=\"i\"/><t t-out=\"i\"/>|<t t-out=\"i_index\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "2|1"
+ },
+ {
+  "name": "foreach_element",
+  "templates": {
+   "main": "<t t-name=\"main\"><ul><li t-foreach=\"items\" t-as=\"item\" t-att-class=\"item_parity\" t-out=\"item\"/></ul></t>"
+  },
+  "main": "main",
+  "values": {
+   "items": [
+    "a",
+    "b",
+    "c"
+   ]
+  },
+  "options": {},
+  "native": true,
+  "output": "<ul><li class=\"even\">a</li><li class=\"odd\">b</li><li class=\"even\">c</li></ul>"
+ },
+ {
+  "name": "foreach_nested",
+  "templates": {
+   "main": "<t t-name=\"main\">\n    <table>\n        <tr t-foreach=\"rows\" t-as=\"row\">\n            <td t-foreach=\"row\" t-as=\"cell\"><t t-out=\"cell\"/></td>\n        </tr>\n    </table>\n</t>"
+  },
+  "main": "main",
+  "values": {
+   "rows": [
+    [
+     1,
+     2
+    ],
+    [
+     3,
+     4
+    ]
+   ]
+  },
+  "options": {},
+  "native": true,
+  "output": "\n    <table>\n        <tr>\n            <td>1</td><td>2</td>\n        </tr><tr>\n            <td>3</td><td>4</td>\n        </tr>\n    </table>"
+ },
+ {
+  "name": "foreach_space_t",
+  "templates": {
+   "main": "<t t-name=\"main\">\n    <div>\n        <t t-foreach=\"[1, 2]\" t-as=\"x\">\n            <span t-out=\"x\"/>\n        </t>\n    </div>\n</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "\n    <div>\n            <span>1</span>\n            <span>2</span>\n    </div>"
+ },
+ {
+  "name": "foreach_str",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"'abc'\" t-as=\"c\"><t t-out=\"c\"/>.</t></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "a.b.c."
+ },
+ {
+  "name": "foreach_tuple_items",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"[(1, 'a'), (2, 'b')]\" t-as=\"p\"><t t-out=\"p[0]\"/><t t-out=\"p[1]\"/></t></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "1a2b"
+ },
+ {
+  "name": "foreach_bad_as",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"[1]\" t-as=\"a-b\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "ValueError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "foreach_missing_as",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"[1]\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "KeyError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "as_without_foreach",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-as=\"x\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "SyntaxError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "foreach_if",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"range(6)\" t-as=\"i\" t-if=\"i % 2\"><t t-out=\"i\"/></t></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "135"
+ },
+ {
+  "name": "set_value",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-set=\"a\" t-value=\"1 + 2\"/><t t-out=\"a\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "3"
+ },
+ {
+  "name": "set_valuef",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-set=\"a\" t-valuef=\"x-{{b}}-#{c}\"/><t t-out=\"a\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "b": "<B>",
+   "c": null
+  },
+  "options": {},
+  "native": true,
+  "output": "x-&lt;B&gt;-"
+ },
+ {
+  "name": "set_body",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-set=\"a\"><b>bold</b> <t t-out=\"x\"/></t><div t-out=\"a\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "x": "<y>"
+  },
+  "options": {},
+  "native": true,
+  "output": "<div><b>bold</b> &lt;y&gt;</div>"
+ },
+ {
+  "name": "set_empty_body",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-set=\"a\"/><t t-set=\"b\"></t>[<t t-out=\"a\"/>][<t t-out=\"b\"/>]</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "[][]"
+ },
+ {
+  "name": "set_body_spaces",
+  "templates": {
+   "main": "<t t-name=\"main\">\n    <t t-set=\"a\">\n        <span>x</span>\n    </t>\n    <div t-out=\"a\"/>\n</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "\n    <div>\n        <span>x</span>\n    </div>"
+ },
+ {
+  "name": "set_value_empty",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-set=\"a\" t-value=\"\"/><t t-out=\"a\">none</t></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "none"
+ },
+ {
+  "name": "set_dict",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-set=\"{'a': 1, 'b': 2}\"/><t t-out=\"a\"/><t t-out=\"b\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "12"
+ },
+ {
+  "name": "set_invalid_name",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-set=\"a-b\" t-value=\"1\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "SyntaxError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "set_dunder",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-set=\"__a\" t-value=\"1\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "SyntaxError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "set_zero_value",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-set=\"0\" t-value=\"1\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "SyntaxError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "set_lazy_snapshot",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-set=\"x\" t-value=\"1\"/><t t-set=\"b\"><t t-out=\"x\"/></t><t t-set=\"x\" t-value=\"2\"/><t t-out=\"b\"/><t t-out=\"x\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "12"
+ },
+ {
+  "name": "set_lazy_inner_set",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-set=\"b\"><t t-set=\"y\" t-value=\"5\"/><t t-out=\"y\"/></t><t t-out=\"b\"/>|<t t-out=\"y\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "5|"
+ },
+ {
+  "name": "set_body_in_condition",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-set=\"abc\"> <span a=\"b\"> a </span> </t><div t-if=\"abc\">123</div><div t-if=\"not abc\">456</div></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div>123</div>"
+ },
+ {
+  "name": "set_lazy_concat",
+  "templates": {
+   "main": "<t t-name=\"main\">\n                <t t-set=\"abc\"> <span a=\"b\"> a </span> </t>\n                <div t-out=\"(v + abc)\">123</div>\n                <div t-out=\"(abc + v)\">123</div>\n            </t>"
+  },
+  "main": "main",
+  "values": {
+   "v": "\"yes\""
+  },
+  "options": {},
+  "native": true,
+  "output": "\n                <div>&#34;yes&#34; <span a=\"b\"> a </span> </div>\n                <div> <span a=\"b\"> a </span> &#34;yes&#34;</div>"
+ },
+ {
+  "name": "set_lazy_percent",
+  "templates": {
+   "main": "<t t-name=\"main\">\n                <t t-set=\"final_message\">Powered by %s%s</t>\n                <div t-out=\"final_message % (a, b and ('-%s' % b) or '')\"/>\n            </t>"
+  },
+  "main": "main",
+  "values": {
+   "a": 1,
+   "b": 2
+  },
+  "options": {},
+  "native": true,
+  "output": "\n                <div>Powered by 1-2</div>"
+ },
+ {
+  "name": "set_lazy_percent2",
+  "templates": {
+   "main": "<t t-name=\"main\">\n                <t t-set=\"toto\">Toto %s</t>\n                <t t-set=\"abc\"> <span a=\"b\"> [%s , %s] </span> </t>\n                <div t-out=\"(abc % (add_abc, toto)) % 5\">123</div>\n            </t>"
+  },
+  "main": "main",
+  "values": {
+   "add_abc": "\"yes\""
+  },
+  "options": {},
+  "native": true,
+  "output": "\n                <div> <span a=\"b\"> [&#34;yes&#34; , Toto 5] </span> </div>"
+ },
+ {
+  "name": "set_lazy_in",
+  "templates": {
+   "main": "<t t-name=\"main\">\n                <t t-set=\"val\"><b>TOTO %s</b></t>\n                <t t-if=\"'TOTO' in val\">if 'TOTO' in val</t>\n                <t t-if=\"'>' in val\">if > in val</t>\n                <t t-if=\"'&lt;b>' in val\">if tag in val</t>\n                <a t-att-help=\"val % 1\"/>\n            </t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "\n                if 'TOTO' in val\n                if > in val\n                if tag in val\n                <a help=\"&lt;b&gt;TOTO 1&lt;/b&gt;\"></a>"
+ },
+ {
+  "name": "set_lazy_methods",
+  "templates": {
+   "main": "<t t-name=\"main\">\n                <t t-set=\"abc\"> <span a=\"b\"> a </span> </t>\n                <div t-out=\"(abc.strip() + v)\">123</div>\n                <t t-set=\"val\"><b>TOTO %s</b></t>\n                <a t-out=\"val.replace('T', '_')\"/>\n            </t>"
+  },
+  "main": "main",
+  "values": {
+   "v": "\"yes\""
+  },
+  "options": {},
+  "native": true,
+  "output": "\n                <div><span a=\"b\"> a </span>&#34;yes&#34;</div>\n                <a><b>_O_O %s</b></a>"
+ },
+ {
+  "name": "set_on_element",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-set=\"a\" t-value=\"3\">x</div><t t-out=\"a\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div></div>3"
+ },
+ {
+  "name": "set_and_out",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-set=\"a\" t-value=\"1\" t-out=\"a\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "KeyError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "att_basic",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-att-a=\"1\" t-att-b=\"None\" t-att-c=\"False\" t-att-d=\"''\" t-att-e=\"0\" t-att-f=\"True\" t-att-g=\"[]\" t-att-h=\"'x'\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div a=\"1\" d=\"\" f=\"True\" h=\"x\"></div>"
+ },
+ {
+  "name": "att_escaping",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-att-foo=\"bar\"/><div t-att-m=\"m\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "bar": "\"<>&'",
+   "m": {
+    "$markup": "<b>"
+   }
+  },
+  "options": {},
+  "native": true,
+  "output": "<div foo=\"&#34;&lt;&gt;&amp;&#39;\"></div><div m=\"&lt;b&gt;\"></div>"
+ },
+ {
+  "name": "att_order",
+  "templates": {
+   "main": "<t t-name=\"main\"><div b=\"1\" t-att-a=\"2\" class=\"c\" t-attf-z=\"z\" t-att=\"{'class': 'd', 'y': 5}\" t-att-class=\"'e'\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div b=\"1\" class=\"e\" a=\"2\" z=\"z\" y=\"5\"></div>"
+ },
+ {
+  "name": "att_dict",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-att=\"{'a': 1, 'b': None, 'c': ''}\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div a=\"1\" c=\"\"></div>"
+ },
+ {
+  "name": "att_pair",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-att=\"['a', 'b']\"/><div t-att=\"('c', 1)\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div a=\"b\"></div><div c=\"1\"></div>"
+ },
+ {
+  "name": "att_pairs",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-att=\"[('a', 1), ('b', 2)]\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div a=\"1\" b=\"2\"></div>"
+ },
+ {
+  "name": "att_other",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-att=\"None\"/><div t-att=\"5\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div></div><div></div>"
+ },
+ {
+  "name": "attf",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-attf-class=\"a {{b}} #{c} {{d}}\" t-attf-e=\"plain\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "b": "B",
+   "c": "<C>",
+   "d": null
+  },
+  "options": {},
+  "native": true,
+  "output": "<div class=\"a B &lt;C&gt; \" e=\"plain\"></div>"
+ },
+ {
+  "name": "attf_percent",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-attf-class=\"100% {{b}}%s\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "b": "B"
+  },
+  "options": {},
+  "native": true,
+  "output": "<div class=\"100% B%s\"></div>"
+ },
+ {
+  "name": "attf_markup",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-attf-x=\"{{m}}\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "m": {
+    "$markup": "<b>"
+   }
+  },
+  "options": {},
+  "native": true,
+  "output": "<div x=\"&lt;b&gt;\"></div>"
+ },
+ {
+  "name": "attf_nested_braces",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-attf-x=\"{{ {'a': 1}['a'] }}\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div x=\"1\"></div>"
+ },
+ {
+  "name": "att_href_js",
+  "templates": {
+   "main": "<t t-name=\"main\"><a t-att-href=\"u\">x</a><a t-attf-href=\"{{u}}\">y</a><a href=\"javascript:alert(2)\">static</a></t>"
+  },
+  "main": "main",
+  "values": {
+   "u": "javascript:alert(1)"
+  },
+  "options": {},
+  "native": true,
+  "output": "<a href=\"\">x</a><a href=\"\">y</a><a href=\"javascript:alert(2)\">static</a>"
+ },
+ {
+  "name": "att_href_js_variants",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"urls\" t-as=\"u\"><a t-att-href=\"u\"/></t></t>"
+  },
+  "main": "main",
+  "values": {
+   "urls": [
+    "JaVaScRiPt:x",
+    " java\tscript:x",
+    "java%73cript:x",
+    "javascript:history.back()",
+    "javascript:window.history.back()",
+    "/ok",
+    "",
+    "javascript:history.back();x",
+    "jav+ascript:x"
+   ]
+  },
+  "options": {},
+  "native": true,
+  "output": "<a href=\"\"></a><a href=\"\"></a><a href=\"\"></a><a href=\"javascript:history.back()\"></a><a href=\"javascript:window.history.back()\"></a><a href=\"/ok\"></a><a href=\"\"></a><a href=\"\"></a><a href=\"\"></a>"
+ },
+ {
+  "name": "att_on_t",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-att-x=\"1\">a</t><t class=\"c\" t-att-y=\"2\" t-out=\"'b'\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "ab"
+ },
+ {
+  "name": "att_root_t",
+  "templates": {
+   "main": "<t t-name=\"main\" t-att-x=\"1\">a</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "a"
+ },
+ {
+  "name": "att_translate",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-attf-title.translate=\"T {{1}}\" t-att-x=\"1\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div x=\"1\" title=\"T 1\"></div>"
+ },
+ {
+  "name": "att_no_propagation",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-att-a=\"1\"><span t-out=\"2\"/><p>x</p></div><p t-att-b=\"1\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div a=\"1\"><span>2</span><p>x</p></div><p b=\"1\"></p>"
+ },
+ {
+  "name": "att_names_escaped",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-att=\"{'a&lt;b': 1}\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div a&lt;b=\"1\"></div>"
+ },
+ {
+  "name": "att_void",
+  "templates": {
+   "main": "<t t-name=\"main\"><img t-att-src=\"s\"/><br t-att-class=\"'x'\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "s": "a.png"
+  },
+  "options": {},
+  "native": true,
+  "output": "<img src=\"a.png\"/><br class=\"x\"/>"
+ },
+ {
+  "name": "att_int_key",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-att=\"{1: 2}\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div 1=\"2\"></div>"
+ },
+ {
+  "name": "att_empty_dict_then_child",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-att=\"{}\"><span t-att-a=\"1\">x</span></div></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div><span a=\"1\">x</span></div>"
+ },
+ {
+  "name": "call_basic",
+  "templates": {
+   "main": "<t t-name=\"main\"><div><t t-call=\"sub\"/></div></t>",
+   "sub": "<t t-name=\"sub\"><span>sub</span></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div><span>sub</span></div>"
+ },
+ {
+  "name": "call_body",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-call=\"sub\"><b>body</b></t></t>",
+   "sub": "<t t-name=\"sub\"><div><t t-out=\"0\"/></div></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div><b>body</b></div>"
+ },
+ {
+  "name": "call_args",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-call=\"sub\" a=\"1 + 1\" b.f=\"x-{{c}}\" t-args=\"{'d': 4}\"/><t t-out=\"a\"/></t>",
+   "sub": "<t t-name=\"sub\"><t t-out=\"a\"/>,<t t-out=\"b\"/>,<t t-out=\"d\"/>,<t t-out=\"c\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "c": "C"
+  },
+  "options": {},
+  "native": true,
+  "output": "2,x-C,4,C"
+ },
+ {
+  "name": "call_scope",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-set=\"x\" t-value=\"1\"/><t t-call=\"sub\"/><t t-out=\"x\"/><t t-out=\"y\"/></t>",
+   "sub": "<t t-name=\"sub\"><t t-set=\"x\" t-value=\"2\"/><t t-set=\"y\" t-value=\"3\"/><t t-out=\"x\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "21"
+ },
+ {
+  "name": "call_set_in_body",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-call=\"sub\"><t t-set=\"v\" t-value=\"'from body'\"/></t></t>",
+   "sub": "<t t-name=\"sub\"><t t-out=\"v\"/>|<t t-out=\"0\"/>|<t t-out=\"v\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "||"
+ },
+ {
+  "name": "call_dynamic",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-call=\"sub_{{n}}\"/></t>",
+   "sub_1": "<t t-name=\"sub_1\">one</t>"
+  },
+  "main": "main",
+  "values": {
+   "n": 1
+  },
+  "options": {},
+  "native": true,
+  "output": "one"
+ },
+ {
+  "name": "call_numeric",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-call=\"42\"/></t>",
+   "42": "<t t-name=\"x42\">forty-two</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "forty-two"
+ },
+ {
+  "name": "call_nested",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-call=\"a\"><t t-call=\"b\">inner</t></t></t>",
+   "a": "<t t-name=\"a\">[a:<t t-out=\"0\"/>]</t>",
+   "b": "<t t-name=\"b\">[b:<t t-out=\"0\"/>]</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "[a:[b:inner]]"
+ },
+ {
+  "name": "call_zero_twice",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-call=\"sub\"><i t-out=\"n\"/></t></t>",
+   "sub": "<t t-name=\"sub\"><t t-set=\"n\" t-value=\"2\"/><t t-out=\"0\"/><t t-out=\"0\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "n": 1
+  },
+  "options": {},
+  "native": true,
+  "output": "<i>1</i><i>1</i>"
+ },
+ {
+  "name": "call_recursion",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-call=\"main\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "RecursionError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "call_recursive_counter",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-if=\"n &gt; 0\"><t t-out=\"n\"/><t t-call=\"main\"><t t-set=\"n\" t-value=\"n - 1\"/></t></t></t>"
+  },
+  "main": "main",
+  "values": {
+   "n": 5
+  },
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "RecursionError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "call_not_on_t",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-call=\"sub\"/></t>",
+   "sub": "<t t-name=\"sub\"/>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "SyntaxError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "call_space",
+  "templates": {
+   "main": "<t t-name=\"main\">\n    <div>\n        <t t-call=\"sub\"/>\n        <t t-call=\"sub\">\n            <b>x</b>\n        </t>\n    </div>\n</t>",
+   "sub": "<t t-name=\"sub\">\n    <p>sub</p>\n    <t t-out=\"0\"/>\n</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "\n    <div>\n    <p>sub</p>\n    \n    <p>sub</p>\n    \n            <b>x</b>\n        \n    </div>"
+ },
+ {
+  "name": "call_xmlid",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"xmlid\"/>|<t t-call=\"sub\"/></t>",
+   "sub": "<t t-name=\"sub\"><t t-out=\"xmlid\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "main|main"
+ },
+ {
+  "name": "call_options_comments",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-call=\"sub\" t-options=\"{'preserve_comments': True}\"/></t>",
+   "sub": "<t t-name=\"sub\"><!-- kept --></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<!-- kept -->"
+ },
+ {
+  "name": "call_foreach",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"[1, 2]\" t-as=\"i\"><t t-call=\"sub\"/></t></t>",
+   "sub": "<t t-name=\"sub\">[<t t-out=\"i\"/>]</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "[1][2]"
+ },
+ {
+  "name": "call_percent_attr",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-call=\"sub\" a.f=\"100%\"/></t>",
+   "sub": "<t t-name=\"sub\"><t t-out=\"a\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "100%"
+ },
+ {
+  "name": "out_zero_outside_call",
+  "templates": {
+   "main": "<t t-name=\"main\">[<t t-out=\"0\"/>]<div t-out=\"0\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "[]<div></div>"
+ },
+ {
+  "name": "options_unconsumed",
+  "templates": {
+   "main": "<t t-name=\"main\"><span t-options=\"{}\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<span></span>"
+ },
+ {
+  "name": "field_on_t",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-field=\"a.b\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "AssertionError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "field_no_dot",
+  "templates": {
+   "main": "<t t-name=\"main\"><span t-field=\"a\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "AssertionError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "field_on_td",
+  "templates": {
+   "main": "<t t-name=\"main\"><td t-field=\"a.b\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "AssertionError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "dunder_expr",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"a.__class__\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "SyntaxError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "syntax_error_expr",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"a +\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "SyntaxError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "strict_name_error",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"missing.attr\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "KeyError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "xml_error",
+  "templates": {
+   "main": "<t t-name=\"main\"><div></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "XMLSyntaxError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "ns_static",
+  "templates": {
+   "main": "<t t-name=\"main\"><svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\"><use xlink:href=\"#a\"/></svg></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\"><use xlink:href=\"#a\"></use></svg>"
+ },
+ {
+  "name": "ns_prefixed",
+  "templates": {
+   "main": "<t t-name=\"main\"><foo:bar xmlns:foo=\"http://foo\"><foo:baz foo:x=\"1\">t</foo:baz></foo:bar></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<foo:bar xmlns:foo=\"http://foo\"><foo:baz foo:x=\"1\">t</foo:baz></foo:bar>"
+ },
+ {
+  "name": "ns_dynamic",
+  "templates": {
+   "main": "<t t-name=\"main\"><svg xmlns=\"http://www.w3.org/2000/svg\"><circle t-att-r=\"r\"/><t t-out=\"r\"/></svg></t>"
+  },
+  "main": "main",
+  "values": {
+   "r": 5
+  },
+  "options": {},
+  "native": true,
+  "output": "<svg xmlns=\"http://www.w3.org/2000/svg\"><circle r=\"5\"></circle>5</svg>"
+ },
+ {
+  "name": "ns_dynamic_prefixed",
+  "templates": {
+   "main": "<t t-name=\"main\"><foo:bar xmlns:foo=\"http://foo\" t-att-a=\"1\"><foo:baz t-attf-foo:y=\"{{2}}\" foo:x=\"1\"/></foo:bar></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "XMLSyntaxError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "ns_call",
+  "templates": {
+   "main": "<t t-name=\"main\"><svg xmlns=\"http://www.w3.org/2000/svg\"><t t-call=\"sub\"/></svg></t>",
+   "sub": "<t t-name=\"sub\"><g xmlns=\"http://www.w3.org/2000/svg\"><rect/></g></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<svg xmlns=\"http://www.w3.org/2000/svg\"><g><rect></rect></g></svg>"
+ },
+ {
+  "name": "expr_arith",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"a * 2 + b - 1\"/>|<t t-out=\"-a\"/>|<t t-out=\"~a\"/>|<t t-out=\"a &lt;&lt; 2\"/>|<t t-out=\"a &amp; 3\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "a": 5,
+   "b": 3
+  },
+  "options": {},
+  "native": true,
+  "output": "12|-5|-6|20|1"
+ },
+ {
+  "name": "expr_str_ops",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"s + '!'\"/>|<t t-out=\"s * 2\"/>|<t t-out=\"s[1]\"/>|<t t-out=\"s[1:3]\"/>|<t t-out=\"s[::-1]\"/>|<t t-out=\"len(s)\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "s": "hello"
+  },
+  "options": {},
+  "native": true,
+  "output": "hello!|hellohello|e|el|olleh|5"
+ },
+ {
+  "name": "expr_str_methods",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"s.upper()\"/>|<t t-out=\"', '.join(l)\"/>|<t t-out=\"s.split('l')\"/>|<t t-out=\"s.startswith('he')\"/>|<t t-out=\"'%s-%d' % (s, 3)\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "s": "hello",
+   "l": [
+    "a",
+    "b"
+   ]
+  },
+  "options": {},
+  "native": true,
+  "output": "HELLO|a, b|[&#39;he&#39;, &#39;&#39;, &#39;o&#39;]|True|hello-3"
+ },
+ {
+  "name": "expr_dict",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"d['a']\"/>|<t t-out=\"d.get('b', 9)\"/>|<t t-out=\"d.get('a')\"/>|<t t-out=\"list(d.keys())\"/>|<t t-out=\"{'x': [1, 2]}['x'][1]\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "d": {
+    "a": 1
+   }
+  },
+  "options": {},
+  "native": true,
+  "output": "1|9|1|[&#39;a&#39;]|2"
+ },
+ {
+  "name": "expr_object",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"o.name\"/>|<t t-out=\"o.child.name\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "o": {
+    "$object": {
+     "name": "parent",
+     "child": {
+      "$object": {
+       "name": "kid"
+      }
+     }
+    }
+   }
+  },
+  "options": {},
+  "native": true,
+  "output": "parent|kid"
+ },
+ {
+  "name": "expr_builtins",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"max(1, 5, 3)\"/>|<t t-out=\"min([4, 2])\"/>|<t t-out=\"sum([1, 2, 3])\"/>|<t t-out=\"sorted([3, 1, 2])\"/>|<t t-out=\"abs(-2)\"/>|<t t-out=\"round(2.675, 2)\"/>|<t t-out=\"round(2.5)\"/>|<t t-out=\"int('42')\"/>|<t t-out=\"float(3)\"/>|<t t-out=\"str(1.0)\"/>|<t t-out=\"bool(0)\"/>|<t t-out=\"list(range(3))\"/>|<t t-out=\"len({1: 2})\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "5|2|6|[1, 2, 3]|2|2.67|2|42|3.0|1.0||[0, 1, 2]|1"
+ },
+ {
+  "name": "expr_builtin_shadow",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"len('ab')\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "len": "shadowed"
+  },
+  "options": {},
+  "native": true,
+  "output": "2"
+ },
+ {
+  "name": "expr_multiline",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"a and\n    b\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "a": 1,
+   "b": 2
+  },
+  "options": {},
+  "native": true,
+  "output": "2"
+ },
+ {
+  "name": "expr_float_repr",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"fs\" t-as=\"f\"><t t-out=\"f\"/>,</t></t>"
+  },
+  "main": "main",
+  "values": {
+   "fs": [
+    0.1,
+    1.0,
+    100.0,
+    1e+16,
+    1.5e+16,
+    1e-05,
+    0.0001,
+    123456789.123,
+    0.3333333333333333,
+    -2.5,
+    {
+     "$float": 1e+22
+    },
+    1.2345678901234567e+19
+   ]
+  },
+  "options": {},
+  "native": true,
+  "output": "0.1,1.0,100.0,1e+16,1.5e+16,1e-05,0.0001,123456789.123,0.3333333333333333,-2.5,1e+22,1.2345678901234567e+19,"
+ },
+ {
+  "name": "expr_comprehension",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"[x * 2 for x in items]\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "items": [
+    1,
+    2
+   ]
+  },
+  "options": {},
+  "native": false,
+  "output": "[2, 4]"
+ },
+ {
+  "name": "expr_lambda",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"sorted(items, key=lambda x: -x)\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "items": [
+    1,
+    3,
+    2
+   ]
+  },
+  "options": {},
+  "native": false,
+  "output": "[3, 2, 1]"
+ },
+ {
+  "name": "expr_fstring",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"f'{a}-{b!r}'\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "a": 1,
+   "b": "x"
+  },
+  "options": {},
+  "native": false,
+  "error": "QWebError",
+  "cause": "SyntaxError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "expr_kwargs",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"sorted(items, reverse=True)\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "items": [
+    1,
+    3,
+    2
+   ]
+  },
+  "options": {},
+  "native": false,
+  "output": "[3, 2, 1]"
+ },
+ {
+  "name": "expr_tuple_top",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"1, 2\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "(1, 2)"
+ },
+ {
+  "name": "expr_true_false_names",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"true\"/><t t-out=\"false\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "True"
+ },
+ {
+  "name": "expr_none_out",
+  "templates": {
+   "main": "<t t-name=\"main\"><b t-out=\"None\">d</b></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<b>d</b>"
+ },
+ {
+  "name": "expr_bytes",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"b'ab'\"/><span t-att-x=\"b'cd'\"/><t t-set=\"v\" t-valuef=\"{{b'ef'}}\"/><t t-out=\"v\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "b&#39;ab&#39;<span x=\"b&#39;cd&#39;\"></span>ef"
+ },
+ {
+  "name": "expr_chained_cmp_values",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"0 &lt; a &lt; 10\"/>|<t t-out=\"0 &lt; a &gt; 10\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "a": 5
+  },
+  "options": {},
+  "native": true,
+  "output": "True|"
+ },
+ {
+  "name": "ws_technical_all",
+  "templates": {
+   "main": "<t t-name=\"main\">\n    <div>\n        <t t-set=\"a\" t-value=\"1\"/>\n        <t t-set=\"b\">\n            text\n        </t>\n        <t t-if=\"a\">\n            <span>if</span>\n        </t>\n        <t t-else=\"\">\n            <span>else</span>\n        </t>\n        <t t-foreach=\"[1, 2]\" t-as=\"x\">\n            <i t-out=\"x\"/>\n        </t>\n        <t t-out=\"b\"/>\n        <p t-if=\"a\">\n            p\n        </p>\n    </div>\n</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "\n    <div>\n            <span>if</span>\n            <i>1</i>\n            <i>2</i>\n        \n            text\n        \n        <p>\n            p\n        </p>\n    </div>"
+ },
+ {
+  "name": "ws_mixed_tabs",
+  "templates": {
+   "main": "<t t-name=\"main\">\n\t<a>1</a>\n\t<t t-if=\"1\">\n\t\t<b>2</b>\n\t</t>\n\t<c>3</c>\n</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "\n\t<a>1</a>\n\t\t<b>2</b>\n\t<c>3</c>"
+ },
+ {
+  "name": "ws_trailing_newlines",
+  "templates": {
+   "main": "<t t-name=\"main\"><b>x</b>\n\n</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<b>x</b>"
+ },
+ {
+  "name": "ws_if_after_newlines",
+  "templates": {
+   "main": "<t t-name=\"main\">x\n\n<t t-if=\"1\">y</t>\n\n<t t-if=\"0\">z</t>\n\nw</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "x\ny\n\nw"
+ },
+ {
+  "name": "ws_set_before",
+  "templates": {
+   "main": "<t t-name=\"main\">a\n    <t t-set=\"x\" t-value=\"1\"/>\n    b</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "a\n    b"
+ },
+ {
+  "name": "ws_call_before",
+  "templates": {
+   "main": "<t t-name=\"main\">a\n    <t t-call=\"s\"/>\n    b</t>",
+   "s": "<t t-name=\"s\">S</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "aS\n    b"
+ },
+ {
+  "name": "ws_foreach_element",
+  "templates": {
+   "main": "<t t-name=\"main\">a\n    <i t-foreach=\"[1]\" t-as=\"x\">v</i>\n    b</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "a\n    <i>v</i>\n    b"
+ },
+ {
+  "name": "ws_if_element",
+  "templates": {
+   "main": "<t t-name=\"main\">a\n    <i t-if=\"0\">v</i>\n    b\n    <i t-if=\"1\">w</i>\n    c</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "a\n    b\n    <i>w</i>\n    c"
+ },
+ {
+  "name": "ws_root_element",
+  "templates": {
+   "main": "<div t-name=\"main\">\n\n  <p>x</p>\n\n</div>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<div>\n  <p>x</p>\n\n</div>"
+ },
+ {
+  "name": "ws_out_slot",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-call=\"s\">\n  body\n</t></t>",
+   "s": "<t t-name=\"s\">[<t t-out=\"0\"/>]</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "[\n  body\n]"
+ }
+]

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "qweb-rs"
+description = "Fast QWeb templating engine (Rust), drop-in for Odoo's ir.qweb rendering"
+requires-python = ">=3.12"
+license = { text = "LGPL-3.0-only" }
+dependencies = ["markupsafe", "lxml"]
+dynamic = ["version"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "qweb_rs._qweb_rs"
+features = ["pyo3/extension-module"]

@@ -1,0 +1,9 @@
+[package]
+name = "qweb-core"
+description = "Fast QWeb templating engine core (host-agnostic)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+memchr.workspace = true
