@@ -528,6 +528,23 @@ fn qualified<'a>(
 
 /// libxml2 text escaping.
 pub fn escape_xml_text(s: &str, out: &mut String) {
+    let b = s.as_bytes();
+    // `\r` is rare: without it, memchr (vectorised) can jump between the
+    // three remaining special bytes.
+    if memchr::memchr(b'\r', b).is_none() {
+        let mut last = 0;
+        for i in memchr::memchr3_iter(b'&', b'<', b'>', b) {
+            out.push_str(&s[last..i]);
+            out.push_str(match b[i] {
+                b'&' => "&amp;",
+                b'<' => "&lt;",
+                _ => "&gt;",
+            });
+            last = i + 1;
+        }
+        out.push_str(&s[last..]);
+        return;
+    }
     let mut last = 0;
     for (i, b) in s.bytes().enumerate() {
         let rep = match b {
@@ -1033,7 +1050,9 @@ fn decode_text(raw: &str, out: &mut String, attr: bool) -> Result<(), String> {
                 i += 1;
                 start = i;
             }
-            _ => i += 1,
+            // Attribute values are short: a byte loop beats memchr there.
+            _ if attr => i += 1,
+            _ => i = memchr::memchr2(b'&', b'\r', &b[i..]).map_or(b.len(), |j| i + j),
         }
     }
     out.push_str(&raw[start..]);
