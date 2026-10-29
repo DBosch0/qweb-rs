@@ -7,6 +7,11 @@
 //! * [`apply_inheritance_server`]: the server dialect
 //!   (`template_inheritance.py`) on serialized trees.
 //! * [`Renderer`]: QWeb string rendering with plain JSON values.
+//!
+//! Build with `scripts/build_wasm.sh` (wasm-bindgen) or wasm-pack; see
+//! README.md.
+
+#![deny(missing_docs)]
 
 use std::sync::Arc;
 
@@ -16,6 +21,7 @@ use qweb_inherit::js::{JsInheritance, apply_context_to_text_nodes};
 use qweb_value::{Context, ValueHost, from_json};
 use wasm_bindgen::prelude::*;
 
+/// A JS `Error` with the given message.
 fn js_err(msg: impl Into<String>) -> JsError {
     JsError::new(&msg.into())
 }
@@ -29,24 +35,38 @@ pub struct TemplateStore {
 
 #[wasm_bindgen]
 impl TemplateStore {
+    /// An empty store (`debug`: `odoo.debug`, which adds the `CLASS_CONTAINS`
+    /// warnings).
     #[wasm_bindgen(constructor)]
     pub fn new(debug: bool) -> TemplateStore {
-        TemplateStore { dom: Dom::new(), js: JsInheritance::new(debug) }
+        TemplateStore {
+            dom: Dom::new(),
+            js: JsInheritance::new(debug),
+        }
     }
 
+    /// Change `odoo.debug`.
     #[wasm_bindgen(js_name = setDebug)]
     pub fn set_debug(&mut self, debug: bool) {
         self.js.debug = debug;
     }
 
+    /// The node of handle `h`, if it is live.
     fn check(&self, h: u32) -> Result<DomId, JsError> {
         let id = h as DomId;
-        if self.dom.is_live(id) { Ok(id) } else { Err(js_err(format!("invalid template handle {h}"))) }
+        if self.dom.is_live(id) {
+            Ok(id)
+        } else {
+            Err(js_err(format!("invalid template handle {h}")))
+        }
     }
 
     /// Parse an XML string; returns the handle of its document element.
     pub fn parse(&mut self, xml: &str) -> Result<u32, JsError> {
-        self.dom.parse(xml).map(|id| id as u32).map_err(|e| js_err(e.0))
+        self.dom
+            .parse(xml)
+            .map(|id| id as u32)
+            .map_err(|e| js_err(e.0))
     }
 
     /// `deepClone` (text translation contexts are kept).
@@ -66,9 +86,17 @@ impl TemplateStore {
 
     /// `applyInheritance(root, operations, url)`; returns the new root.
     #[wasm_bindgen(js_name = applyInheritance)]
-    pub fn apply_inheritance(&mut self, root: u32, operations: u32, url: &str) -> Result<u32, JsError> {
+    pub fn apply_inheritance(
+        &mut self,
+        root: u32,
+        operations: u32,
+        url: &str,
+    ) -> Result<u32, JsError> {
         let (root, ops) = (self.check(root)?, self.check(operations)?);
-        self.js.apply(&mut self.dom, root, ops, url).map(|r| r as u32).map_err(|e| js_err(e.0))
+        self.js
+            .apply(&mut self.dom, root, ops, url)
+            .map(|r| r as u32)
+            .map_err(|e| js_err(e.0))
     }
 
     /// `console.warn` messages of the last `applyInheritance`.
@@ -77,16 +105,19 @@ impl TemplateStore {
         std::mem::take(&mut self.js.warnings)
     }
 
+    /// Qualified tag name of element `h`.
     #[wasm_bindgen(js_name = tagName)]
     pub fn tag_name(&self, h: u32) -> Result<String, JsError> {
         Ok(self.dom.node(self.check(h)?).name.clone())
     }
 
+    /// `getAttribute(name)` of element `h`.
     #[wasm_bindgen(js_name = getAttribute)]
     pub fn get_attribute(&self, h: u32, name: &str) -> Result<Option<String>, JsError> {
         Ok(self.dom.node(self.check(h)?).get(name).map(str::to_owned))
     }
 
+    /// `setAttribute(name, value)` on element `h`.
     #[wasm_bindgen(js_name = setAttribute)]
     pub fn set_attribute(&mut self, h: u32, name: &str, value: &str) -> Result<(), JsError> {
         let id = self.check(h)?;
@@ -152,13 +183,19 @@ impl TemplateStore {
     /// Number of live nodes (for leak checks).
     #[wasm_bindgen(js_name = nodeCount)]
     pub fn node_count(&self) -> usize {
-        (0..self.dom.nodes.len()).filter(|&i| self.dom.is_live(i)).count()
+        (0..self.dom.nodes.len())
+            .filter(|&i| self.dom.is_live(i))
+            .count()
     }
 }
 
 /// Server dialect (`odoo/tools/template_inheritance.py`) on serialized trees.
 #[wasm_bindgen(js_name = applyInheritanceServer)]
-pub fn apply_inheritance_server(source: &str, specs: Vec<String>, inherit_branding: bool) -> Result<String, JsError> {
+pub fn apply_inheritance_server(
+    source: &str,
+    specs: Vec<String>,
+    inherit_branding: bool,
+) -> Result<String, JsError> {
     let specs: Vec<&str> = specs.iter().map(String::as_str).collect();
     qweb_inherit::apply_inheritance_str(source, &specs, qweb_inherit::Options { inherit_branding })
         .map_err(|e| js_err(e.message))
@@ -179,21 +216,32 @@ impl Default for Renderer {
 
 #[wasm_bindgen]
 impl Renderer {
+    /// A renderer without templates.
     #[wasm_bindgen(constructor)]
     pub fn new() -> Renderer {
         let host = ValueHost::new();
-        Renderer { engine: Engine::new(host.clone()), host }
+        Renderer {
+            engine: Engine::new(host.clone()),
+            host,
+        }
     }
 
-    /// Register a template source under `name`.
+    /// Register a template source under `name` (drops the compiled templates).
     #[wasm_bindgen(js_name = addTemplate)]
     pub fn add_template(&mut self, name: &str, source: &str) {
         self.host.add_template(name, source);
         self.engine.invalidate();
     }
 
-    /// Render `name` with `values` and `options` (JSON objects).
-    pub fn render(&self, name: &str, values_json: &str, options_json: &str) -> Result<String, JsError> {
+    /// Render `name` with `values` and `options` (JSON objects; an empty
+    /// string is `{}`). See `qweb_value::from_json` for markup, tuples and
+    /// objects.
+    pub fn render(
+        &self,
+        name: &str,
+        values_json: &str,
+        options_json: &str,
+    ) -> Result<String, JsError> {
         let parse = |s: &str| -> Result<serde_json::Map<String, serde_json::Value>, JsError> {
             if s.is_empty() {
                 return Ok(Default::default());
@@ -206,10 +254,18 @@ impl Renderer {
         };
         let values = parse(values_json)?;
         let options = parse(options_json)?;
-        let scope = self.host.make_scope(values.iter().map(|(k, v)| (k.as_str(), from_json(v))));
+        let scope = self
+            .host
+            .make_scope(values.iter().map(|(k, v)| (k.as_str(), from_json(v))));
         let ctx = Context::new(options.iter().map(|(k, v)| (k.clone(), from_json(v))));
         self.engine
-            .render(&qweb_core::compile::template_ref(name), scope, ctx)
+            .render(&qweb_core::TemplateRef::parse(name), scope, ctx)
             .map_err(|e| js_err(e.to_string()))
+    }
+
+    /// Warnings emitted since the last call (unknown directives, ...).
+    #[wasm_bindgen(js_name = takeWarnings)]
+    pub fn take_warnings(&self) -> Vec<String> {
+        self.host.take_warnings()
     }
 }

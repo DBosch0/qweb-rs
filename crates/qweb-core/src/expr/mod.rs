@@ -2,8 +2,8 @@
 //!
 //! The parser handles the subset of Python expressions that can be evaluated
 //! natively by any host. Anything else (lambda, comprehensions, f-strings,
-//! starred arguments, ...) is reported as [`ParseError::Unsupported`]; hosts
-//! able to evaluate Python source (the Python binding) fall back to it.
+//! starred arguments, ...) is reported as unsupported, and hosts
+//! able to evaluate Python source (the Python binding) compile it themselves.
 //!
 //! Name resolution follows `IrQweb._compile_expr_tokens`:
 //! * names in [`BUILTINS`] resolve to builtins, never to template values;
@@ -11,109 +11,211 @@
 //!   (`values['x']`, raising `KeyError`), other names are lenient
 //!   (`values.get('x')`), unless `raise_on_missing` makes every name strict;
 //! * any identifier containing `__` is rejected.
+//!
+//! The AST is crate-private: the compiler lowers it into [`crate::ir::Ex`],
+//! resolving names to host keys and constants to host values.
 
-pub mod lexer;
+mod lexer;
 
 use lexer::{LexError, Tok};
 
 /// Names never looked up in the template values (`ALLOWED_KEYWORD` minus the
 /// keywords): the keys of `odoo.tools.safe_eval._BUILTINS`.
-pub const BUILTINS: &[&str] = &[
-    "bytes", "str", "unicode", "bool", "int", "float", "enumerate", "dict", "list", "tuple", "map", "abs", "min", "max",
-    "sum", "reduce", "filter", "sorted", "round", "len", "repr", "set", "all", "any", "ord", "chr", "divmod",
-    "isinstance", "range", "xrange", "zip", "Exception",
+///
+/// They compile to [`Host::builtin`](crate::Host::builtin) constants; a name
+/// the host does not provide raises `NameError` when evaluated.
+pub const BUILTINS: [&str; 32] = [
+    "bytes",
+    "str",
+    "unicode",
+    "bool",
+    "int",
+    "float",
+    "enumerate",
+    "dict",
+    "list",
+    "tuple",
+    "map",
+    "abs",
+    "min",
+    "max",
+    "sum",
+    "reduce",
+    "filter",
+    "sorted",
+    "round",
+    "len",
+    "repr",
+    "set",
+    "all",
+    "any",
+    "ord",
+    "chr",
+    "divmod",
+    "isinstance",
+    "range",
+    "xrange",
+    "zip",
+    "Exception",
 ];
 
-const KEYWORDS: &[&str] = &[
-    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del",
-    "elif", "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal",
-    "not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
+const KEYWORDS: [&str; 35] = [
+    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
+    "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
+    "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
+    "with", "yield",
 ];
 
-pub fn is_builtin(name: &str) -> bool {
+#[inline]
+fn is_builtin(name: &str) -> bool {
     BUILTINS.contains(&name)
 }
 
+/// Unary operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnOp {
+    /// `-x`
     Neg,
+    /// `+x`
     Pos,
+    /// `~x`
     Invert,
 }
 
+/// Binary arithmetic or bitwise operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
+    /// `a + b`
     Add,
+    /// `a - b`
     Sub,
+    /// `a * b`
     Mul,
+    /// `a @ b`
     MatMul,
+    /// `a / b`
     Div,
+    /// `a // b`
     FloorDiv,
+    /// `a % b`
     Mod,
+    /// `a ** b`
     Pow,
+    /// `a << b`
     LShift,
+    /// `a >> b`
     RShift,
+    /// `a & b`
     BitAnd,
+    /// `a | b`
     BitOr,
+    /// `a ^ b`
     BitXor,
 }
 
+/// Comparison operator. Only the first six reach [`Host::compare`](crate::Host::compare);
+/// membership and identity use [`Host::contains`](crate::Host::contains) and
+/// [`Host::is`](crate::Host::is).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CmpOp {
+    /// `a < b`
     Lt,
+    /// `a <= b`
     Le,
+    /// `a == b`
     Eq,
+    /// `a != b`
     Ne,
+    /// `a > b`
     Gt,
+    /// `a >= b`
     Ge,
+    /// `a in b`
     In,
+    /// `a not in b`
     NotIn,
+    /// `a is b`
     Is,
+    /// `a is not b`
     IsNot,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Expr {
+/// Expression AST, as produced by [`parse`].
+#[cfg_attr(test, derive(Debug, PartialEq))]
+pub(crate) enum Expr {
+    /// `None`
     None,
+    /// `True` / `False`
     Bool(bool),
+    /// Integer literal that fits in an `i64`.
     Int(i64),
+    /// Larger decimal integer literal (its digits).
     BigInt(String),
+    /// Float literal.
     Float(f64),
+    /// String literal (adjacent literals concatenated).
     Str(String),
+    /// Bytes literal (adjacent literals concatenated).
     Bytes(Vec<u8>),
-    Name { name: String, strict: bool },
+    /// Template value lookup. `strict`: `values['x']` (raises `KeyError`),
+    /// otherwise `values.get('x')`.
+    Name {
+        /// Variable name.
+        name: String,
+        /// Whether a missing name is an error.
+        strict: bool,
+    },
+    /// A name of [`BUILTINS`].
     Builtin(String),
+    /// `obj.name`
     Attr(Box<Expr>, String),
+    /// `obj[key]`
     Item(Box<Expr>, Box<Expr>),
+    /// `lower:upper:step` inside a subscript.
     Slice(Option<Box<Expr>>, Option<Box<Expr>>, Option<Box<Expr>>),
-    Call { func: Box<Expr>, args: Vec<Expr>, kwargs: Vec<(String, Expr)> },
+    /// `func(*args, **kwargs)` with plain (non-starred) arguments.
+    Call {
+        /// Called expression.
+        func: Box<Expr>,
+        /// Positional arguments.
+        args: Vec<Expr>,
+        /// Keyword arguments, in source order.
+        kwargs: Vec<(String, Expr)>,
+    },
+    /// Unary arithmetic operator.
     Unary(UnOp, Box<Expr>),
+    /// `not x`
     Not(Box<Expr>),
+    /// Binary arithmetic operator.
     Bin(BinOp, Box<Expr>, Box<Expr>),
+    /// Comparison chain `first op1 e1 op2 e2 ...` (never empty).
     Cmp(Box<Expr>, Vec<(CmpOp, Expr)>),
+    /// `a and b and ...` (at least two operands).
     And(Vec<Expr>),
+    /// `a or b or ...` (at least two operands).
     Or(Vec<Expr>),
-    IfElse { cond: Box<Expr>, then: Box<Expr>, orelse: Box<Expr> },
+    /// `then if cond else orelse`
+    IfElse {
+        /// Condition.
+        cond: Box<Expr>,
+        /// Value when `cond` is true.
+        then: Box<Expr>,
+        /// Value otherwise.
+        orelse: Box<Expr>,
+    },
+    /// Tuple display (also the empty expression).
     Tuple(Vec<Expr>),
+    /// List display.
     List(Vec<Expr>),
+    /// Set display.
     Set(Vec<Expr>),
+    /// Dict display.
     Dict(Vec<(Expr, Expr)>),
 }
 
-impl Expr {
-    /// True for literal constants (foldable at compile time).
-    pub fn is_const(&self) -> bool {
-        match self {
-            Expr::None | Expr::Bool(_) | Expr::Int(_) | Expr::BigInt(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bytes(_) => true,
-            Expr::Tuple(items) => items.iter().all(Expr::is_const),
-            Expr::Unary(UnOp::Neg | UnOp::Pos, e) => matches!(**e, Expr::Int(_) | Expr::Float(_)),
-            _ => false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ParseError {
+/// Error from [`parse`].
+#[derive(Debug)]
+pub(crate) enum ParseError {
     /// Valid Python not handled natively.
     Unsupported(String),
     /// Invalid syntax (as far as the native parser can tell).
@@ -127,7 +229,9 @@ impl std::fmt::Display for ParseError {
         match self {
             ParseError::Unsupported(m) => write!(f, "unsupported expression: {m}"),
             ParseError::Syntax(m) => write!(f, "invalid syntax: {m}"),
-            ParseError::Dunder(n) => write!(f, "Using variable names with '__' is not allowed: {n:?}"),
+            ParseError::Dunder(n) => {
+                write!(f, "Using variable names with '__' is not allowed: {n:?}")
+            }
         }
     }
 }
@@ -137,68 +241,32 @@ impl From<LexError> for ParseError {
         match e {
             LexError::Unsupported(m) => ParseError::Unsupported(m),
             LexError::Syntax(m) => ParseError::Syntax(m),
+            LexError::Dunder(n) => ParseError::Dunder(n),
         }
     }
 }
 
-/// Check `src` for identifiers containing `__` (done on the raw source so
-/// that it also applies to expressions the native parser does not support).
-pub fn check_dunder(src: &str) -> Result<(), ParseError> {
-    let b = src.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        let c = b[i];
-        if c == b'\'' || c == b'"' {
-            // skip string bodies (names inside f-strings are checked by the host)
-            let q = c;
-            let triple = i + 2 < b.len() && b[i + 1] == q && b[i + 2] == q;
-            i += if triple { 3 } else { 1 };
-            while i < b.len() {
-                if b[i] == b'\\' {
-                    i += 2;
-                    continue;
-                }
-                if b[i] == q && (!triple || (i + 2 < b.len() && b[i + 1] == q && b[i + 2] == q)) {
-                    i += if triple { 3 } else { 1 };
-                    break;
-                }
-                i += 1;
-            }
-            continue;
-        }
-        if c == b'_' || c.is_ascii_alphabetic() || c >= 0x80 {
-            let start = i;
-            while i < b.len() && (b[i] == b'_' || b[i].is_ascii_alphanumeric() || b[i] >= 0x80) {
-                i += 1;
-            }
-            let word = &src[start..i];
-            if word.contains("__") {
-                return Err(ParseError::Dunder(word.to_owned()));
-            }
-            continue;
-        }
-        if c.is_ascii_digit() {
-            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'.') {
-                i += 1;
-            }
-            continue;
-        }
-        i += 1;
-    }
-    Ok(())
-}
-
-/// Parse an expression.
-pub fn parse(src: &str, raise_on_missing: bool) -> Result<Expr, ParseError> {
-    check_dunder(src)?;
+/// Parse an expression. `raise_on_missing` makes every name lookup strict.
+/// An empty expression is the empty tuple.
+pub(crate) fn parse(src: &str, raise_on_missing: bool) -> Result<Expr, ParseError> {
     let toks = lexer::tokenize(src)?;
-    let mut p = Parser { toks, pos: 0, strict_all: raise_on_missing };
+    debug_assert!(!toks.is_empty(), "end token does not exist");
+    debug_assert!(toks.last().unwrap() == &Tok::End, "last token is end");
+
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        strict_all: raise_on_missing,
+    };
     if p.peek() == &Tok::End {
         return Ok(Expr::Tuple(Vec::new()));
     }
     let e = p.expr_list()?;
     if p.peek() != &Tok::End {
-        return Err(ParseError::Syntax(format!("unexpected token {:?}", p.peek())));
+        return Err(ParseError::Syntax(format!(
+            "unexpected token {:?}",
+            p.peek()
+        )));
     }
     Ok(e)
 }
@@ -213,6 +281,10 @@ type PResult = Result<Expr, ParseError>;
 
 impl Parser {
     fn peek(&self) -> &Tok {
+        debug_assert!(
+            self.pos < self.toks.len(),
+            "position outside of token buffer"
+        );
         &self.toks[self.pos]
     }
 
@@ -220,12 +292,15 @@ impl Parser {
         self.toks.get(self.pos + n).unwrap_or(&Tok::End)
     }
 
+    /// Consume the current token. It is moved out of the buffer (the parser
+    /// only ever looks ahead, never back); the final `End` stays in place.
     fn next(&mut self) -> Tok {
-        let t = self.toks[self.pos].clone();
         if self.pos < self.toks.len() - 1 {
             self.pos += 1;
+            std::mem::replace(&mut self.toks[self.pos - 1], Tok::End)
+        } else {
+            Tok::End
         }
-        t
     }
 
     fn is_op(&self, op: &str) -> bool {
@@ -258,7 +333,10 @@ impl Parser {
         if self.eat_op(op) {
             Ok(())
         } else {
-            Err(ParseError::Syntax(format!("expected '{op}', got {:?}", self.peek())))
+            Err(ParseError::Syntax(format!(
+                "expected '{op}', got {:?}",
+                self.peek()
+            )))
         }
     }
 
@@ -309,10 +387,16 @@ impl Parser {
         if self.eat_kw("if") {
             let cond = self.or_test()?;
             if !self.eat_kw("else") {
-                return Err(ParseError::Syntax("expected 'else' after 'if' expression".into()));
+                return Err(ParseError::Syntax(
+                    "expected 'else' after 'if' expression".into(),
+                ));
             }
             let orelse = self.test()?;
-            return Ok(Expr::IfElse { cond: Box::new(cond), then: Box::new(e), orelse: Box::new(orelse) });
+            return Ok(Expr::IfElse {
+                cond: Box::new(cond),
+                then: Box::new(e),
+                orelse: Box::new(orelse),
+            });
         }
         Ok(e)
     }
@@ -399,7 +483,13 @@ impl Parser {
             &[("&", BinOp::BitAnd)],
             &[("<<", BinOp::LShift), (">>", BinOp::RShift)],
             &[("+", BinOp::Add), ("-", BinOp::Sub)],
-            &[("*", BinOp::Mul), ("/", BinOp::Div), ("//", BinOp::FloorDiv), ("%", BinOp::Mod), ("@", BinOp::MatMul)],
+            &[
+                ("*", BinOp::Mul),
+                ("/", BinOp::Div),
+                ("//", BinOp::FloorDiv),
+                ("%", BinOp::Mod),
+                ("@", BinOp::MatMul),
+            ],
         ];
         if level == LEVELS.len() {
             return self.factor();
@@ -451,7 +541,9 @@ impl Parser {
         loop {
             if self.eat_op(".") {
                 match self.next() {
-                    Tok::Name(n) if !KEYWORDS.contains(&n.as_str()) => e = Expr::Attr(Box::new(e), n),
+                    Tok::Name(n) if !KEYWORDS.contains(&n.as_str()) => {
+                        e = Expr::Attr(Box::new(e), n)
+                    }
                     t => return Err(ParseError::Syntax(format!("invalid attribute name {t:?}"))),
                 }
             } else if self.eat_op("(") {
@@ -474,23 +566,30 @@ impl Parser {
                 break;
             }
             self.check_star()?;
-            let is_kw = matches!(self.peek(), Tok::Name(_)) && matches!(self.peek_at(1), Tok::Op("="));
+            let is_kw =
+                matches!(self.peek(), Tok::Name(_)) && matches!(self.peek_at(1), Tok::Op("="));
             if is_kw {
-                let Tok::Name(name) = self.next() else { unreachable!() };
+                let Tok::Name(name) = self.next() else {
+                    unreachable!()
+                };
                 if KEYWORDS.contains(&name.as_str()) {
                     return Err(ParseError::Syntax("invalid keyword argument".into()));
                 }
                 self.next(); // '='
                 let value = self.test()?;
                 if kwargs.iter().any(|(k, _)| *k == name) {
-                    return Err(ParseError::Syntax(format!("keyword argument repeated: {name}")));
+                    return Err(ParseError::Syntax(format!(
+                        "keyword argument repeated: {name}"
+                    )));
                 }
                 kwargs.push((name, value));
             } else {
                 let value = self.test()?;
                 self.check_comprehension()?;
                 if !kwargs.is_empty() {
-                    return Err(ParseError::Syntax("positional argument follows keyword argument".into()));
+                    return Err(ParseError::Syntax(
+                        "positional argument follows keyword argument".into(),
+                    ));
                 }
                 args.push(value);
             }
@@ -499,7 +598,11 @@ impl Parser {
                 break;
             }
         }
-        Ok(Expr::Call { func: Box::new(func), args, kwargs })
+        Ok(Expr::Call {
+            func: Box::new(func),
+            args,
+            kwargs,
+        })
     }
 
     fn subscript_list(&mut self) -> PResult {
@@ -519,13 +622,25 @@ impl Parser {
 
     fn subscript(&mut self) -> PResult {
         self.check_star()?;
-        let lower = if self.is_op(":") { None } else { Some(Box::new(self.test()?)) };
+        let lower = if self.is_op(":") {
+            None
+        } else {
+            Some(Box::new(self.test()?))
+        };
         if !self.eat_op(":") {
             return Ok(*lower.ok_or_else(|| ParseError::Syntax("empty subscript".into()))?);
         }
-        let upper = if self.is_op(":") || self.is_op("]") || self.is_op(",") { None } else { Some(Box::new(self.test()?)) };
+        let upper = if self.is_op(":") || self.is_op("]") || self.is_op(",") {
+            None
+        } else {
+            Some(Box::new(self.test()?))
+        };
         let step = if self.eat_op(":") {
-            if self.is_op("]") || self.is_op(",") { None } else { Some(Box::new(self.test()?)) }
+            if self.is_op("]") || self.is_op(",") {
+                None
+            } else {
+                Some(Box::new(self.test()?))
+            }
         } else {
             None
         };
@@ -546,7 +661,11 @@ impl Parser {
                             s.push_str(t);
                             self.next();
                         }
-                        Tok::Bytes(_) => return Err(ParseError::Syntax("cannot mix bytes and nonbytes literals".into())),
+                        Tok::Bytes(_) => {
+                            return Err(ParseError::Syntax(
+                                "cannot mix bytes and nonbytes literals".into(),
+                            ));
+                        }
                         _ => break,
                     }
                 }
@@ -560,7 +679,11 @@ impl Parser {
                             b.extend_from_slice(t);
                             self.next();
                         }
-                        Tok::Str(_) => return Err(ParseError::Syntax("cannot mix bytes and nonbytes literals".into())),
+                        Tok::Str(_) => {
+                            return Err(ParseError::Syntax(
+                                "cannot mix bytes and nonbytes literals".into(),
+                            ));
+                        }
                         _ => break,
                     }
                 }
@@ -580,7 +703,10 @@ impl Parser {
                     return Ok(first);
                 }
                 if !self.is_op(",") {
-                    return Err(ParseError::Syntax(format!("expected ')', got {:?}", self.peek())));
+                    return Err(ParseError::Syntax(format!(
+                        "expected ')', got {:?}",
+                        self.peek()
+                    )));
                 }
                 let mut items = vec![first];
                 while self.eat_op(",") {
@@ -666,7 +792,11 @@ impl Parser {
         if is_builtin(&n) {
             return Ok(Expr::Builtin(n));
         }
-        let strict = self.strict_all || self.is_op(".") || self.is_op("(") || self.is_op("[") || self.is_op("{");
+        let strict = self.strict_all
+            || self.is_op(".")
+            || self.is_op("(")
+            || self.is_op("[")
+            || self.is_op("{");
         Ok(Expr::Name { name: n, strict })
     }
 }
@@ -676,17 +806,30 @@ mod tests {
     use super::*;
 
     fn name(n: &str, strict: bool) -> Expr {
-        Expr::Name { name: n.into(), strict }
+        Expr::Name {
+            name: n.into(),
+            strict,
+        }
     }
 
     #[test]
     fn names() {
         assert_eq!(parse("a", false).unwrap(), name("a", false));
-        assert_eq!(parse("a.b", false).unwrap(), Expr::Attr(Box::new(name("a", true)), "b".into()));
-        assert_eq!(parse("(a).b", false).unwrap(), Expr::Attr(Box::new(name("a", false)), "b".into()));
+        assert_eq!(
+            parse("a.b", false).unwrap(),
+            Expr::Attr(Box::new(name("a", true)), "b".into())
+        );
+        assert_eq!(
+            parse("(a).b", false).unwrap(),
+            Expr::Attr(Box::new(name("a", false)), "b".into())
+        );
         assert_eq!(
             parse("len(x)", false).unwrap(),
-            Expr::Call { func: Box::new(Expr::Builtin("len".into())), args: vec![name("x", false)], kwargs: vec![] }
+            Expr::Call {
+                func: Box::new(Expr::Builtin("len".into())),
+                args: vec![name("x", false)],
+                kwargs: vec![]
+            }
         );
         assert_eq!(parse("a", true).unwrap(), name("a", true));
         assert_eq!(parse("", false).unwrap(), Expr::Tuple(vec![]));
@@ -706,14 +849,40 @@ mod tests {
         assert!(matches!(e, Expr::Tuple(ref v) if v.len() == 2));
         let e = parse("x[1:2, ::3]", false).unwrap();
         assert!(matches!(e, Expr::Item(_, _)));
+        // chained conditional expressions nest in the `else` branch
+        let e = parse("a if b else c if d else e", false).unwrap();
+        assert!(
+            matches!(e, Expr::IfElse { ref orelse, .. } if matches!(**orelse, Expr::IfElse { .. }))
+        );
+        let e = parse("'a' 'b'", false).unwrap();
+        assert_eq!(e, Expr::Str("ab".into()));
     }
 
     #[test]
     fn unsupported() {
-        for src in ["lambda x: x", "[x for x in y]", "f'{x}'", "f(*a)", "{**a}", "(x := 1)", "1j"] {
-            assert!(matches!(parse(src, false), Err(ParseError::Unsupported(_))), "{src}");
+        for src in [
+            "lambda x: x",
+            "[x for x in y]",
+            "f'{x}'",
+            "f(*a)",
+            "{**a}",
+            "(x := 1)",
+            "1j",
+        ] {
+            assert!(
+                matches!(parse(src, false), Err(ParseError::Unsupported(_))),
+                "{src}"
+            );
         }
-        assert!(matches!(parse("a.__class__", false), Err(ParseError::Dunder(_))));
+        assert!(matches!(
+            parse("a.__class__", false),
+            Err(ParseError::Dunder(_))
+        ));
+        assert!(matches!(
+            parse("x + __y", false),
+            Err(ParseError::Dunder(_))
+        ));
+        assert!(parse("'__x' + y", false).is_ok());
         assert!(matches!(parse("a +", false), Err(ParseError::Syntax(_))));
     }
 }

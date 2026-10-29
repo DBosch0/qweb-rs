@@ -1,15 +1,24 @@
 //! Port of `odoo/tools/template_inheritance.py` (`apply_inheritance_specs`).
 
-use qweb_core::text::rstrip_newline;
+use qweb_core::compile::py_repr_str as py_repr;
+use qweb_core::escape::escape as html_escape;
 use qweb_core::xml::{Document, NodeId, NodeKind};
 
 use crate::xpath::{XPath, py_is_space};
 
 /// Attribute names that contain Python expressions.
-const PYTHON_ATTRIBUTES: &[&str] = &["readonly", "required", "invisible", "column_invisible", "t-if", "t-elif"];
+const PYTHON_ATTRIBUTES: &[&str] = &[
+    "readonly",
+    "required",
+    "invisible",
+    "column_invisible",
+    "t-if",
+    "t-elif",
+];
 
 const REMOVAL_PI: &str = "apply-inheritance-specs-node-removal";
 
+/// Python exception class of an [`InheritError`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
     /// `odoo.exceptions.ValidationError` (invalid xpath expression).
@@ -18,9 +27,12 @@ pub enum ErrorKind {
     Value,
 }
 
+/// An inheritance spec failed to apply.
 #[derive(Debug, Clone)]
 pub struct InheritError {
+    /// Exception class to raise.
     pub kind: ErrorKind,
+    /// Error message.
     pub message: String,
 }
 
@@ -33,9 +45,13 @@ impl std::fmt::Display for InheritError {
 impl std::error::Error for InheritError {}
 
 fn value_err<T>(msg: String) -> Result<T, InheritError> {
-    Err(InheritError { kind: ErrorKind::Value, message: msg })
+    Err(InheritError {
+        kind: ErrorKind::Value,
+        message: msg,
+    })
 }
 
+/// Options of [`apply_inheritance_specs`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Options {
     /// Mark removed nodes and copied `$0` nodes for branding distribution.
@@ -51,32 +67,28 @@ fn py_strip(s: &str) -> &str {
     s.trim_matches(py_is_space)
 }
 
-/// `RSTRIP_REGEXP.search(s).group(0)` or `""`.
-fn rstrip_match(s: Option<&str>) -> String {
-    match s {
-        Some(s) if !s.is_empty() => rstrip_newline(s).1.to_owned(),
-        _ => String::new(),
+/// `RSTRIP_REGEXP.search(s).group(0)` (`RSTRIP_REGEXP = r'\n[ \t]*$'`), or
+/// `""` when there is no match. Python's `$` also matches before a final
+/// `\n`, so in `"a\n  \n"` the match is `"\n  "`.
+fn rstrip_match(s: Option<&str>) -> &str {
+    let s = s.unwrap_or("");
+    let body = s.strip_suffix('\n').unwrap_or(s);
+    let spaces = body.trim_end_matches([' ', '\t']);
+    if spaces.ends_with('\n') {
+        &s[spaces.len() - 1..body.len()]
+    } else if body.len() < s.len() {
+        "\n"
+    } else {
+        ""
     }
-}
-
-/// markupsafe `escape` (used in error messages).
-fn html_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&#34;"),
-            '\'' => out.push_str("&#39;"),
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 /// Locate a node of `arch` matching `spec` (`locate_node`).
-pub fn locate_node(doc: &Document, arch: NodeId, spec: NodeId) -> Result<Option<NodeId>, InheritError> {
+pub fn locate_node(
+    doc: &Document,
+    arch: NodeId,
+    spec: NodeId,
+) -> Result<Option<NodeId>, InheritError> {
     let s = doc.node(spec);
     if s.tag == "xpath" {
         let Some(expr) = s.get("expr") else {
@@ -89,49 +101,76 @@ pub fn locate_node(doc: &Document, arch: NodeId, spec: NodeId) -> Result<Option<
             kind: ErrorKind::Validation,
             message: format!("Invalid Expression while parsing xpath “{expr}”"),
         })?;
-        return xpath.first_element(doc, arch).map_err(|e| InheritError { kind: ErrorKind::Value, message: e.0 });
+        return xpath.first_element(doc, arch).map_err(|e| InheritError {
+            kind: ErrorKind::Value,
+            message: e.0,
+        });
     }
     let iter = doc.iter(arch);
-    let elements = iter.into_iter().filter(|&n| doc.node(n).kind == NodeKind::Element && doc.node(n).tag == s.tag);
+    let elements = iter
+        .into_iter()
+        .filter(|&n| doc.node(n).kind == NodeKind::Element && doc.node(n).tag == s.tag);
     if s.tag == "field" {
         let name = s.get("name");
-        return Ok(elements.into_iter().find(|&n| doc.node(n).get("name") == name));
+        return Ok(elements
+            .into_iter()
+            .find(|&n| doc.node(n).get("name") == name));
     }
     for n in elements {
-        if s.attrs.iter().filter(|(k, _)| k != "position").all(|(k, v)| doc.node(n).get(k) == Some(v.as_str())) {
+        if s.attrs
+            .iter()
+            .filter(|(k, _)| k != "position")
+            .all(|(k, v)| doc.node(n).get(k) == Some(v.as_str()))
+        {
             return Ok(Some(n));
         }
     }
     Ok(None)
 }
 
-/// `add_text_before(node, text)`.
-fn add_text_before(doc: &mut Document, node: NodeId, text: Option<String>) {
-    let Some(text) = text else { return };
+/// `add_text_before(node, text)`. Fails like Odoo (`parent.text` on `None`)
+/// when `node` is detached.
+fn add_text_before(
+    doc: &mut Document,
+    node: NodeId,
+    text: Option<String>,
+) -> Result<(), InheritError> {
+    let Some(text) = text else { return Ok(()) };
     match doc.prev_sibling(node) {
         Some(prev) => {
             let n = doc.node_mut(prev);
             n.tail = Some(n.tail.take().unwrap_or_default() + &text);
         }
         None => {
-            let parent = doc.node(node).parent.expect("node without parent");
+            let Some(parent) = doc.node(node).parent else {
+                return value_err("'NoneType' object has no attribute 'text'".into());
+            };
             let n = doc.node_mut(parent);
             n.text = Some(py_rstrip(n.text.as_deref().unwrap_or("")).to_owned() + &text);
         }
     }
+    Ok(())
 }
 
-/// `remove_element(node)`: remove the node but keep its tail.
-fn remove_element(doc: &mut Document, node: NodeId) {
+/// `remove_element(node)`: remove the node but keep its tail. Fails like Odoo
+/// when `node` is detached (e.g. a sentinel extracted by a `move` spec).
+fn remove_element(doc: &mut Document, node: NodeId) -> Result<(), InheritError> {
     let tail = doc.node_mut(node).tail.take();
-    add_text_before(doc, node, tail);
+    add_text_before(doc, node, tail)?;
+    if doc.node(node).parent.is_none() {
+        return value_err("'NoneType' object has no attribute 'remove'".into());
+    }
     doc.detach(node);
+    Ok(())
 }
+
+/// Hook called with each spec before it is located (see [`apply_inheritance_specs`]).
+pub type PreLocate = dyn FnMut(&mut Document, NodeId);
 
 struct Applier<'a> {
     doc: &'a mut Document,
     source: NodeId,
-    pre_locate: Option<&'a mut dyn FnMut(&mut Document, NodeId)>,
+    pre_locate: Option<&'a mut PreLocate>,
 }
 
 impl Applier<'_> {
@@ -152,13 +191,13 @@ impl Applier<'_> {
         }
         match self.locate(spec)? {
             Some(n) => {
-                if self.doc.node(n).parent.is_none() {
-                    return value_err("'NoneType' object has no attribute 'remove'".into());
-                }
-                remove_element(self.doc, n);
+                remove_element(self.doc, n)?;
                 Ok(n)
             }
-            None => value_err(format!("Element “{}” cannot be located in parent view", self.doc.to_string(spec, true))),
+            None => value_err(format!(
+                "Element “{}” cannot be located in parent view",
+                self.doc.to_string(spec, true)
+            )),
         }
     }
 
@@ -173,7 +212,9 @@ impl Applier<'_> {
             self.doc.detach(new);
             return Ok(());
         }
-        self.doc.add_previous(target, new).or_else(|e| value_err(e.into()))
+        self.doc
+            .add_previous(target, new)
+            .or_else(|e| value_err(e.into()))
     }
 
     fn is_move(&self, n: NodeId) -> bool {
@@ -182,7 +223,11 @@ impl Applier<'_> {
     }
 
     /// `add_stripped_items_before(node, spec, extract)`.
-    fn add_stripped_items_before(&mut self, node: NodeId, spec: NodeId) -> Result<(), InheritError> {
+    fn add_stripped_items_before(
+        &mut self,
+        node: NodeId,
+        spec: NodeId,
+    ) -> Result<(), InheritError> {
         if self.doc.node(node).parent.is_none() {
             return value_err("'NoneType' object has no attribute 'text'".into());
         }
@@ -191,7 +236,8 @@ impl Applier<'_> {
 
         let prev = {
             let doc = &*self.doc;
-            let parent = doc.node(node).parent.expect("node without parent");
+            // checked above
+            let parent = doc.node(node).parent.unwrap();
             let idx = doc.index_in_parent(node).unwrap_or(0);
             doc.node(parent).children[..idx]
                 .iter()
@@ -204,13 +250,17 @@ impl Applier<'_> {
             None => {
                 let parent = self.doc.node(node).parent.unwrap();
                 let p = self.doc.node_mut(parent);
-                before_text = rstrip_match(p.text.as_deref());
+                before_text = rstrip_match(p.text.as_deref()).to_owned();
                 let new = py_rstrip(p.text.as_deref().unwrap_or("")).to_owned() + &text;
-                p.text = if new.is_empty() { spec_text.as_ref().map(|_| String::new()) } else { Some(new) };
+                p.text = if new.is_empty() {
+                    spec_text.as_ref().map(|_| String::new())
+                } else {
+                    Some(new)
+                };
             }
             Some(prev) => {
                 let p = self.doc.node_mut(prev);
-                before_text = rstrip_match(p.tail.as_deref());
+                before_text = rstrip_match(p.tail.as_deref()).to_owned();
                 p.tail = Some(py_rstrip(p.tail.as_deref().unwrap_or("")).to_owned() + &text);
             }
         }
@@ -253,12 +303,25 @@ impl Applier<'_> {
                     .filter(|(k, _)| k != "position")
                     .map(|(k, v)| format!(" {k}=\"{}\"", html_escape(v)))
                     .collect();
-                return value_err(format!("Element '<{}{attrs}>' cannot be located in parent view", s.tag));
+                return value_err(format!(
+                    "Element '<{}{attrs}>' cannot be located in parent view",
+                    s.tag
+                ));
             };
-            let pos = self.doc.node(spec).get("position").unwrap_or("inside").to_owned();
+            let pos = self
+                .doc
+                .node(spec)
+                .get("position")
+                .unwrap_or("inside")
+                .to_owned();
             match pos.as_str() {
                 "replace" => {
-                    let mode = self.doc.node(spec).get("mode").unwrap_or("outer").to_owned();
+                    let mode = self
+                        .doc
+                        .node(spec)
+                        .get("mode")
+                        .unwrap_or("outer")
+                        .to_owned();
                     match mode.as_str() {
                         "outer" => self.replace_outer(spec, node, opts)?,
                         "inner" => self.replace_inner(spec, node)?,
@@ -270,19 +333,21 @@ impl Applier<'_> {
                     let sentinel = self.doc.new_element("sentinel", Vec::new());
                     self.doc.append(node, sentinel);
                     self.add_stripped_items_before(sentinel, spec)?;
-                    remove_element(self.doc, sentinel);
+                    remove_element(self.doc, sentinel)?;
                 }
                 "after" => {
                     if self.doc.node(node).parent.is_none() {
                         return value_err("Only processing instructions and comments can be siblings of the root element".into());
                     }
                     let sentinel = self.doc.new_element("sentinel", Vec::new());
-                    self.doc.add_next(node, sentinel).or_else(|e| value_err(e.into()))?;
+                    self.doc
+                        .add_next(node, sentinel)
+                        .or_else(|e| value_err(e.into()))?;
                     if let Some(tail) = self.doc.node_mut(node).tail.take() {
                         self.doc.node_mut(sentinel).tail = Some(tail);
                     }
                     self.add_stripped_items_before(sentinel, spec)?;
-                    remove_element(self.doc, sentinel);
+                    remove_element(self.doc, sentinel)?;
                 }
                 "before" => self.add_stripped_items_before(node, spec)?,
                 _ => return value_err(format!("Invalid position attribute: '{pos}'")),
@@ -291,7 +356,12 @@ impl Applier<'_> {
         Ok(self.source)
     }
 
-    fn replace_outer(&mut self, spec: NodeId, node: NodeId, opts: Options) -> Result<(), InheritError> {
+    fn replace_outer(
+        &mut self,
+        spec: NodeId,
+        node: NodeId,
+        opts: Options,
+    ) -> Result<(), InheritError> {
         // spec.xpath(".//*[text()='$0']")
         let locs: Vec<NodeId> = self
             .doc
@@ -302,7 +372,10 @@ impl Applier<'_> {
                 let d = &*self.doc;
                 d.node(n).kind == NodeKind::Element
                     && (d.node(n).text.as_deref() == Some("$0")
-                        || d.node(n).children.iter().any(|&c| d.node(c).tail.as_deref() == Some("$0")))
+                        || d.node(n)
+                            .children
+                            .iter()
+                            .any(|&c| d.node(c).tail.as_deref() == Some("$0")))
             })
             .collect();
         for loc in locs {
@@ -328,7 +401,13 @@ impl Applier<'_> {
                 return value_err("'NoneType' object has no attribute 'set'".into());
             };
             let source = self.doc.deep_copy(content);
-            if let Some(t_name) = self.doc.node(node).get("t-name").filter(|s| !s.is_empty()).map(str::to_owned) {
+            if let Some(t_name) = self
+                .doc
+                .node(node)
+                .get("t-name")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+            {
                 self.doc.node_mut(source).set("t-name", t_name);
             }
             if let Some(comment) = comment {
@@ -338,10 +417,18 @@ impl Applier<'_> {
             }
             self.source = source;
         } else {
-            if opts.inherit_branding && self.doc.node(node).get("data-oe-xpath").is_none_or(str::is_empty) {
+            if opts.inherit_branding
+                && self
+                    .doc
+                    .node(node)
+                    .get("data-oe-xpath")
+                    .is_none_or(str::is_empty)
+            {
                 let tag = self.doc.node(node).tag.clone();
                 let pi = self.doc.new_pi(REMOVAL_PI, &tag);
-                self.doc.add_previous(node, pi).or_else(|e| value_err(e.into()))?;
+                self.doc
+                    .add_previous(node, pi)
+                    .or_else(|e| value_err(e.into()))?;
             }
             let children = self.doc.node(spec).children.clone();
             for mut child in children {
@@ -361,7 +448,10 @@ impl Applier<'_> {
     fn replace_inner(&mut self, spec: NodeId, node: NodeId) -> Result<(), InheritError> {
         let sentinel = self.doc.new_element("sentinel", Vec::new());
         match self.doc.node(node).children.first().copied() {
-            Some(first) => self.doc.add_previous(first, sentinel).or_else(|e| value_err(e.into()))?,
+            Some(first) => self
+                .doc
+                .add_previous(first, sentinel)
+                .or_else(|e| value_err(e.into()))?,
             None => self.doc.append(node, sentinel),
         }
         self.doc.node_mut(node).text = None;
@@ -381,7 +471,9 @@ impl Applier<'_> {
             .doc
             .iter(spec)
             .into_iter()
-            .filter(|&n| self.doc.node(n).kind == NodeKind::Element && self.doc.node(n).tag == "attribute")
+            .filter(|&n| {
+                self.doc.node(n).kind == NodeKind::Element && self.doc.node(n).tag == "attribute"
+            })
             .collect();
         for child in children {
             let c = self.doc.node(child);
@@ -389,11 +481,17 @@ impl Applier<'_> {
                 .attrs
                 .iter()
                 .map(|(k, _)| k)
-                .filter(|k| !matches!(k.as_str(), "name" | "add" | "remove" | "separator") && !k.starts_with("data-oe-"))
+                .filter(|k| {
+                    !matches!(k.as_str(), "name" | "add" | "remove" | "separator")
+                        && !k.starts_with("data-oe-")
+                })
                 .map(|k| py_repr(k))
                 .collect();
             if !unknown.is_empty() {
-                return value_err(format!("Invalid attributes {} in element <attribute>", unknown.join(", ")));
+                return value_err(format!(
+                    "Invalid attributes {} in element <attribute>",
+                    unknown.join(", ")
+                ));
             }
             let Some(attribute) = c.get("name").map(str::to_owned) else {
                 return value_err("Element <attribute> has no 'name'".into());
@@ -402,11 +500,16 @@ impl Applier<'_> {
             let remove = c.get("remove").unwrap_or("").to_owned();
             let value = if !add.is_empty() || !remove.is_empty() {
                 if let Some(t) = c.text.as_deref().filter(|t| !t.is_empty()) {
-                    return value_err(format!("Element <attribute> with 'add' or 'remove' cannot contain text {}", py_repr(t)));
+                    return value_err(format!(
+                        "Element <attribute> with 'add' or 'remove' cannot contain text {}",
+                        py_repr(t)
+                    ));
                 }
                 let mut value = self.doc.node(node).get(&attribute).unwrap_or("").to_owned();
                 let separator = c.get("separator").map(str::to_owned);
-                if PYTHON_ATTRIBUTES.contains(&attribute.as_str()) || attribute.starts_with("decoration-") {
+                if PYTHON_ATTRIBUTES.contains(&attribute.as_str())
+                    || attribute.starts_with("decoration-")
+                {
                     let Some(separator) = separator else {
                         return value_err("'NoneType' object has no attribute 'strip'".into());
                     };
@@ -437,7 +540,11 @@ impl Applier<'_> {
                         }
                     }
                     if !add.is_empty() {
-                        value = if value.is_empty() { add } else { format!("({value}) {separator} ({add})") };
+                        value = if value.is_empty() {
+                            add
+                        } else {
+                            format!("({value}) {separator} ({add})")
+                        };
                     }
                     value
                 } else {
@@ -449,12 +556,18 @@ impl Applier<'_> {
                     if separator == Some("") {
                         return value_err("empty separator".into());
                     }
-                    let to_remove: Vec<String> = py_split(&remove, separator).map(|s| py_strip(s).to_owned()).collect();
+                    let to_remove: Vec<String> = py_split(&remove, separator)
+                        .map(|s| py_strip(s).to_owned())
+                        .collect();
                     let mut out: Vec<String> = py_split(&value, separator)
                         .map(|s| py_strip(s).to_owned())
                         .filter(|v| !v.is_empty() && !to_remove.contains(v))
                         .collect();
-                    out.extend(py_split(&add, separator).map(|s| py_strip(s).to_owned()).filter(|s| !s.is_empty()));
+                    out.extend(
+                        py_split(&add, separator)
+                            .map(|s| py_strip(s).to_owned())
+                            .filter(|s| !s.is_empty()),
+                    );
                     out.join(separator.unwrap_or(" "))
                 }
             } else {
@@ -489,28 +602,6 @@ fn full_match_parens(remove: &str, value: &str) -> Result<bool, InheritError> {
     }
 }
 
-/// Python `repr()` of a str (simplified: single quotes unless it contains one).
-fn py_repr(s: &str) -> String {
-    let quote = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
-    let mut out = String::new();
-    out.push(quote);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == quote => {
-                out.push('\\');
-                out.push(c);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push(quote);
-    out
-}
-
 /// Apply the inheritance `specs` (nodes of `doc`, e.g. imported with
 /// [`Document::import`]) to the tree rooted at `source`.
 ///
@@ -521,16 +612,29 @@ pub fn apply_inheritance_specs<'a>(
     source: NodeId,
     specs: &[NodeId],
     opts: Options,
-    pre_locate: Option<&'a mut dyn FnMut(&mut Document, NodeId)>,
+    pre_locate: Option<&'a mut PreLocate>,
 ) -> Result<NodeId, InheritError> {
-    let mut applier = Applier { doc, source, pre_locate };
+    let mut applier = Applier {
+        doc,
+        source,
+        pre_locate,
+    };
     applier.apply(specs, opts)
 }
 
 /// String API: parse `source` and each spec tree, apply them in order and
 /// serialize the result (like `etree.tostring(result, encoding='unicode')`).
-pub fn apply_inheritance_str(source: &str, specs: &[&str], opts: Options) -> Result<String, InheritError> {
-    let parse = |s: &str| Document::parse(s).map_err(|e| InheritError { kind: ErrorKind::Value, message: e.to_string() });
+pub fn apply_inheritance_str(
+    source: &str,
+    specs: &[&str],
+    opts: Options,
+) -> Result<String, InheritError> {
+    let parse = |s: &str| {
+        Document::parse(s).map_err(|e| InheritError {
+            kind: ErrorKind::Value,
+            message: e.to_string(),
+        })
+    };
     let mut doc = parse(source)?;
     let mut root = doc.root;
     for spec in specs {
@@ -549,6 +653,47 @@ mod tests {
         apply_inheritance_str(src, &[spec], Options::default()).unwrap()
     }
 
+    /// A nested `move` that extracts Odoo's temporary sentinel: errors (with
+    /// Odoo's `AttributeError` message), never a panic. See README_PRIV.md,
+    /// "Odoo edge cases".
+    #[test]
+    fn moved_sentinel() {
+        let src = r#"<t t-name="tmpl"><p id="2" name="y"></p></t>"#;
+        let err = |spec: &str| {
+            apply_inheritance_str(src, &[spec], Options::default())
+                .unwrap_err()
+                .message
+        };
+        let text = "'NoneType' object has no attribute 'text'";
+        let remove = "'NoneType' object has no attribute 'remove'";
+        assert_eq!(
+            err(
+                r#"<xpath expr="//p" position="after"><xpath expr="//t/*[2]" position="move"/></xpath>"#
+            ),
+            text
+        );
+        assert_eq!(
+            err(
+                r#"<xpath expr="//p" position="inside"><xpath expr="//p/*[1]" position="move"/></xpath>"#
+            ),
+            text
+        );
+        assert_eq!(
+            err(
+                "<xpath expr=\"//*[@id='2']\" position=\"after\"><xpath expr=\"//p[@id='2']\" position=\"move\"/>\n\n<xpath expr=\"//t/*[2]\" position=\"move\"/><b>$0</b></xpath>"
+            ),
+            remove
+        );
+        // Odoo silently loses the content here: reproduced, not fixed.
+        assert_eq!(
+            apply(
+                src,
+                r#"<xpath expr="//t" position="replace" mode="inner"><b/><xpath expr="//t/*[2]" position="move"/></xpath>"#
+            ),
+            r#"<t t-name="tmpl"/>"#
+        );
+    }
+
     #[test]
     fn positions() {
         let src = "<t>\n    <div>\n        <p/>\n    </div>\n</t>";
@@ -557,19 +702,48 @@ mod tests {
             "<t>\n    <div>\n        <p/><span/>\n    </div>\n</t>"
         );
         assert_eq!(
-            apply(src, "<xpath expr=\"//div\" position=\"inside\">\n    <span/>\n</xpath>"),
+            apply(
+                src,
+                "<xpath expr=\"//div\" position=\"inside\">\n    <span/>\n</xpath>"
+            ),
             "<t>\n    <div>\n        <p/>\n    <span/>\n    </div>\n</t>"
         );
-        assert_eq!(apply(src, r#"<xpath expr="//p" position="replace"/>"#), "<t>\n    <div>\n        </div>\n</t>");
         assert_eq!(
-            apply(src, r#"<div position="attributes"><attribute name="class" add="a b" separator=" "/></div>"#),
+            apply(src, r#"<xpath expr="//p" position="replace"/>"#),
+            "<t>\n    <div>\n        </div>\n</t>"
+        );
+        assert_eq!(
+            apply(
+                src,
+                r#"<div position="attributes"><attribute name="class" add="a b" separator=" "/></div>"#
+            ),
             "<t>\n    <div class=\"a b\">\n        <p/>\n    </div>\n</t>"
         );
     }
 
     #[test]
+    fn rstrip() {
+        assert_eq!(rstrip_match(Some("abc\n  ")), "\n  ");
+        assert_eq!(rstrip_match(Some("a\n  \n")), "\n  ");
+        assert_eq!(rstrip_match(Some("a\n\n")), "\n");
+        assert_eq!(rstrip_match(Some("a \n")), "\n");
+        assert_eq!(rstrip_match(Some("a  ")), "");
+        assert_eq!(rstrip_match(Some("\n")), "\n");
+        assert_eq!(rstrip_match(Some("")), "");
+        assert_eq!(rstrip_match(None), "");
+    }
+
+    #[test]
     fn not_found() {
-        let e = apply_inheritance_str("<t/>", &[r#"<xpath expr="//x" position="after"/>"#], Options::default()).unwrap_err();
-        assert_eq!(e.message, "Element '<xpath expr=\"//x\">' cannot be located in parent view");
+        let e = apply_inheritance_str(
+            "<t/>",
+            &[r#"<xpath expr="//x" position="after"/>"#],
+            Options::default(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            e.message,
+            "Element '<xpath expr=\"//x\">' cannot be located in parent view"
+        );
     }
 }

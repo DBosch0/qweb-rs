@@ -8,8 +8,17 @@ const TCTX: &str = "t-translation-context";
 
 /// JS `String.prototype.trim` whitespace.
 fn js_is_space(c: char) -> bool {
-    matches!(c, '\t' | '\n' | '\x0b' | '\x0c' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}'
-        | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}')
+    matches!(
+        c,
+        '\t' | '\n' | '\x0b' | '\x0c' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'
+            ..='\u{200a}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202f}'
+                | '\u{205f}'
+                | '\u{3000}'
+                | '\u{feff}'
+    )
 }
 
 fn trim_end(s: &str) -> String {
@@ -22,7 +31,9 @@ fn trim(s: &str) -> &str {
 
 /// `data.split(/(?=\n[ \t]*$)/)`: `(text1, text2)`.
 fn split_rstrip(s: &str) -> (String, Option<String>) {
-    let Some(p) = s.rfind('\n') else { return (s.to_owned(), None) };
+    let Some(p) = s.rfind('\n') else {
+        return (s.to_owned(), None);
+    };
     if p == 0 || !s[p + 1..].bytes().all(|b| b == b' ' || b == b'\t') {
         // a zero-width match at index 0 does not split
         return (s.to_owned(), None);
@@ -54,7 +65,11 @@ pub fn rewrite_hasclass(xpath: &str) -> String {
             .split(',')
             .map(|c| {
                 let c: Vec<char> = trim(c).chars().collect();
-                let inner: String = if c.len() >= 2 { c[1..c.len() - 1].iter().collect() } else { String::new() };
+                let inner: String = if c.len() >= 2 {
+                    c[1..c.len() - 1].iter().collect()
+                } else {
+                    String::new()
+                };
                 format!("contains(concat(' ', @class, ' '), ' {inner} ')")
             })
             .collect();
@@ -73,6 +88,7 @@ pub struct ClassContainsRegex {
 }
 
 impl ClassContainsRegex {
+    /// `CLASS_CONTAINS_REGEX.test(s)`, updating `lastIndex`.
     pub fn test(&mut self, s: &str) -> bool {
         let units: Vec<u16> = s.encode_utf16().collect();
         if self.last_index > units.len() {
@@ -89,7 +105,10 @@ impl ClassContainsRegex {
                 while end < units.len() && !is_lt(units[end]) {
                     end += 1;
                 }
-                if let Some(j) = (i + pat.len()..end).rev().find(|&j| units[j] == b')' as u16) {
+                if let Some(j) = (i + pat.len()..end)
+                    .rev()
+                    .find(|&j| units[j] == b')' as u16)
+                {
                     self.last_index = j + 1;
                     return true;
                 }
@@ -113,8 +132,12 @@ pub struct JsInheritance {
 }
 
 impl JsInheritance {
+    /// Fresh module state (`odoo.debug` = `debug`).
     pub fn new(debug: bool) -> Self {
-        JsInheritance { debug, ..Default::default() }
+        JsInheritance {
+            debug,
+            ..Default::default()
+        }
     }
 
     fn get_translation_context(&self, dom: &Dom, mut node: DomId) -> Res<String> {
@@ -124,7 +147,11 @@ impl JsInheritance {
             }
             match dom.node(node).parent {
                 Some(p) => node = p,
-                None => return Err(JsError("TypeError: Cannot read properties of null (reading 'hasAttribute')".into())),
+                None => {
+                    return Err(JsError(
+                        "TypeError: Cannot read properties of null (reading 'hasAttribute')".into(),
+                    ));
+                }
             }
         }
     }
@@ -158,10 +185,16 @@ impl JsInheritance {
                 cur = n.parent;
             }
             let Some(parent) = parent else {
-                return Err(JsError("TypeError: Cannot read properties of null (reading 'getAttribute')".into()));
+                return Err(JsError(
+                    "TypeError: Cannot read properties of null (reading 'getAttribute')".into(),
+                ));
             };
             let p = dom.node(parent);
-            let name = p.get("t-name").filter(|s| !s.is_empty()).or(p.get("t-inherit")).unwrap_or("null");
+            let name = p
+                .get("t-name")
+                .filter(|s| !s.is_empty())
+                .or(p.get("t-inherit"))
+                .unwrap_or("null");
             self.warnings.push(format!(
                 "Error-prone use of @class in template \"{name}\" (or one of its inheritors). \
                  Use the hasclass(*classes) function to filter elements by their classes"
@@ -184,19 +217,31 @@ impl JsInheritance {
                 .map_err(|e| JsError(format!("SyntaxError: Failed to execute 'evaluate' on 'Document': The string '{xpath}' is not a valid XPath expression. ({e})")))?;
             let nodes = compiled
                 .select_in(dom, DNode::Node(root), Dialect::Browser)
-                .map_err(|e| JsError(format!("TypeError: Failed to execute 'evaluate' on 'Document': {e}")))?;
+                .map_err(|e| {
+                    JsError(format!(
+                        "TypeError: Failed to execute 'evaluate' on 'Document': {e}"
+                    ))
+                })?;
             return Ok(nodes.first().copied());
         }
         let op = dom.node(operation);
         let tag = op.name.clone();
-        let attrs: Vec<(String, String)> =
-            op.attrs.iter().filter(|a| !a.qname.starts_with(TCTX)).map(|a| (a.qname.clone(), a.value.clone())).collect();
+        let attrs: Vec<(String, String)> = op
+            .attrs
+            .iter()
+            .filter(|a| !a.qname.starts_with(TCTX))
+            .map(|a| (a.qname.clone(), a.value.clone()))
+            .collect();
         // root.querySelectorAll(tag): descendants only, document order
         let mut stack: Vec<DomId> = dom.node(root).children.iter().rev().copied().collect();
         while let Some(id) = stack.pop() {
             let n = dom.node(id);
             if n.kind == DomKind::Element {
-                if n.name == tag && attrs.iter().all(|(k, v)| k == "position" || n.get(k) == Some(v.as_str())) {
+                if n.name == tag
+                    && attrs
+                        .iter()
+                        .all(|(k, v)| k == "position" || n.get(k) == Some(v.as_str()))
+                {
                     return Ok(Some(DNode::Node(id)));
                 }
                 stack.extend(n.children.iter().rev().copied());
@@ -213,7 +258,9 @@ impl JsInheritance {
                 Self::outer_html(dom, operation)
             ))),
             Some(DNode::Node(id)) if dom.node(id).kind == DomKind::Element => Ok(id),
-            Some(_) => Err(JsError("Found node [object Node] instead of an element".into())),
+            Some(_) => Err(JsError(
+                "Found node [object Node] instead of an element".into(),
+            )),
         }
     }
 
@@ -223,7 +270,8 @@ impl JsInheritance {
         let children = dom.node(operation).children.clone();
         for child in children {
             let c = dom.node(child);
-            if c.kind == DomKind::Element && c.name == "xpath" && c.get("position") == Some("move") {
+            if c.kind == DomKind::Element && c.name == "xpath" && c.get("position") == Some("move")
+            {
                 let node = self.get_element(dom, element, child)?;
                 let ctx = self.get_translation_context(dom, node)?;
                 dom.node_mut(node).set(TCTX, ctx);
@@ -268,15 +316,24 @@ impl JsInheritance {
     }
 
     fn modify_attributes(&mut self, dom: &mut Dom, target: DomId, operation: DomId) -> Res<()> {
-        let children: Vec<DomId> =
-            dom.node(operation).children.iter().copied().filter(|&c| dom.node(c).kind == DomKind::Element).collect();
+        let children: Vec<DomId> = dom
+            .node(operation)
+            .children
+            .iter()
+            .copied()
+            .filter(|&c| dom.node(c).kind == DomKind::Element)
+            .collect();
         for child in children {
             let c = dom.node(child);
             if c.name != "attribute" {
                 continue;
             }
             let name = c.get("name").unwrap_or("null").to_owned();
-            let first = c.children.first().copied().filter(|&f| dom.node(f).kind == DomKind::Text);
+            let first = c
+                .children
+                .first()
+                .copied()
+                .filter(|&f| dom.node(f).kind == DomKind::Text);
             let mut value = first.map(|f| dom.node(f).data.clone()).unwrap_or_default();
             let add = c.get("add").unwrap_or("").to_owned();
             let remove = c.get("remove").unwrap_or("").to_owned();
@@ -284,12 +341,23 @@ impl JsInheritance {
                 if first.is_some() {
                     return Err(JsError("Useless element content undefined".into()));
                 }
-                let separator = c.get("separator").filter(|s| !s.is_empty()).unwrap_or(",").to_owned();
+                let separator = c
+                    .get("separator")
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(",")
+                    .to_owned();
                 let to_remove: Vec<&str> = remove.split(separator.as_str()).map(trim).collect();
                 let current = dom.node(target).get(&name).unwrap_or("").to_owned();
-                let mut values: Vec<&str> =
-                    current.split(separator.as_str()).map(trim).filter(|s| !to_remove.contains(s)).collect();
-                values.extend(add.split(separator.as_str()).map(trim).filter(|s| !s.is_empty()));
+                let mut values: Vec<&str> = current
+                    .split(separator.as_str())
+                    .map(trim)
+                    .filter(|s| !to_remove.contains(s))
+                    .collect();
+                values.extend(
+                    add.split(separator.as_str())
+                        .map(trim)
+                        .filter(|s| !s.is_empty()),
+                );
                 value = values.join(&separator);
             }
             let ctx = self.translation_context.clone();
@@ -306,18 +374,32 @@ impl JsInheritance {
         Ok(())
     }
 
-    fn replace(&mut self, dom: &mut Dom, mut root: DomId, target: DomId, operation: DomId) -> Res<DomId> {
-        let mode = dom.node(operation).get("mode").filter(|s| !s.is_empty()).unwrap_or("outer").to_owned();
+    fn replace(
+        &mut self,
+        dom: &mut Dom,
+        mut root: DomId,
+        target: DomId,
+        operation: DomId,
+    ) -> Res<DomId> {
+        let mode = dom
+            .node(operation)
+            .get("mode")
+            .filter(|s| !s.is_empty())
+            .unwrap_or("outer")
+            .to_owned();
         match mode.as_str() {
             "outer" => {
                 // operation.ownerDocument.evaluate(".//*[text()='$0']", operation, ...)
                 let locs: Vec<DomId> = {
                     let mut out = Vec::new();
-                    let mut stack: Vec<DomId> = dom.node(operation).children.iter().rev().copied().collect();
+                    let mut stack: Vec<DomId> =
+                        dom.node(operation).children.iter().rev().copied().collect();
                     while let Some(id) = stack.pop() {
                         let n = dom.node(id);
                         if n.kind == DomKind::Element {
-                            if n.children.iter().any(|&c| dom.node(c).kind == DomKind::Text && dom.node(c).data == "$0") {
+                            if n.children.iter().any(|&c| {
+                                dom.node(c).kind == DomKind::Text && dom.node(c).data == "$0"
+                            }) {
                                 out.push(id);
                             }
                             stack.extend(n.children.iter().rev().copied());
@@ -350,7 +432,10 @@ impl JsInheritance {
                         }
                     }
                     let Some(content) = content else {
-                        return Err(JsError("TypeError: Cannot read properties of null (reading 'cloneNode')".into()));
+                        return Err(JsError(
+                            "TypeError: Cannot read properties of null (reading 'cloneNode')"
+                                .into(),
+                        ));
                     };
                     root = dom.deep_clone(content);
                     if let Some(t_name) = dom.node(target).get("t-name").map(str::to_owned) {
@@ -376,15 +461,31 @@ impl JsInheritance {
     }
 
     /// `applyInheritance(root, operations, url)`: returns the (possibly new) root.
-    pub fn apply(&mut self, dom: &mut Dom, mut root: DomId, operations: DomId, url: &str) -> Res<DomId> {
+    pub fn apply(
+        &mut self,
+        dom: &mut Dom,
+        mut root: DomId,
+        operations: DomId,
+        url: &str,
+    ) -> Res<DomId> {
         self.warnings.clear();
         self.translation_context = url.split('/').nth(1).unwrap_or("").to_owned();
-        let ops: Vec<DomId> =
-            dom.node(operations).children.iter().copied().filter(|&c| dom.node(c).kind == DomKind::Element).collect();
+        let ops: Vec<DomId> = dom
+            .node(operations)
+            .children
+            .iter()
+            .copied()
+            .filter(|&c| dom.node(c).kind == DomKind::Element)
+            .collect();
         let result = (|| {
             for operation in ops {
                 let target = self.get_element(dom, root, operation)?;
-                let position = dom.node(operation).get("position").filter(|s| !s.is_empty()).unwrap_or("inside").to_owned();
+                let position = dom
+                    .node(operation)
+                    .get("position")
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("inside")
+                    .to_owned();
 
                 if self.debug && !url.is_empty() {
                     let attributes: Vec<String> = dom
@@ -393,11 +494,21 @@ impl JsInheritance {
                         .iter()
                         .map(|a| {
                             let mut v = String::new();
-                            json_str(if a.qname == "position" { &position } else { &a.value }, &mut v);
+                            json_str(
+                                if a.qname == "position" {
+                                    &position
+                                } else {
+                                    &a.value
+                                },
+                                &mut v,
+                            );
                             format!("{}={v}", a.qname)
                         })
                         .collect();
-                    let comment = dom.create_comment(&format!(" From file: {url} ; {} ", attributes.join(" ; ")));
+                    let comment = dom.create_comment(&format!(
+                        " From file: {url} ; {} ",
+                        attributes.join(" ; ")
+                    ));
                     if position == "attributes" {
                         dom.before(target, &[comment])?;
                     } else {
@@ -439,7 +550,10 @@ fn remove_node(dom: &mut Dom, node: DomId) {
     if let (Some(n), Some(p)) = (next, prev)
         && dom.node(n).kind == DomKind::Text
         && dom.node(p).kind == DomKind::Text
-        && dom.node(p).parent.is_some_and(|pp| dom.node(pp).children.first() == Some(&p))
+        && dom
+            .node(p)
+            .parent
+            .is_some_and(|pp| dom.node(pp).children.first() == Some(&p))
     {
         let t = trim_end(&dom.node(p).data);
         dom.node_mut(p).data = t;
@@ -490,64 +604,99 @@ mod tests {
     #[test]
     fn upstream_cases() {
         assert_eq!(
-            t(r#"<t t-name="web.A"> <div><h2>Title</h2>text</div> </t>"#, r#"
+            t(
+                r#"<t t-name="web.A"> <div><h2>Title</h2>text</div> </t>"#,
+                r#"
                 <t>
                     <xpath expr="./div/h2" position="replace"><h3>Other title</h3></xpath>
-                </t>"#),
+                </t>"#
+            ),
             r#"<t t-name="web.A" t-translation-context="from_target"> <div><h3 t-translation-context="from_op">Other title</h3>text</div> </t>"#
         );
         assert_eq!(
-            apply(r#"<t t-name="web.A"> <div><h2>Title</h2>text</div> </t>"#, r#"
+            apply(
+                r#"<t t-name="web.A"> <div><h2>Title</h2>text</div> </t>"#,
+                r#"
                 <t>
                     <xpath expr="./div/h2" position="replace"><h3>Other title</h3></xpath>
-                </t>"#, "test/from_op", true).unwrap(),
+                </t>"#,
+                "test/from_op",
+                true
+            )
+            .unwrap(),
             r#"<t t-name="web.A" t-translation-context="from_target"> <div><!-- From file: test/from_op ; expr="./div/h2" ; position="replace" --><h3 t-translation-context="from_op">Other title</h3>text</div> </t>"#
         );
         assert_eq!(
-            t(r#"<t t-name="web.A"> <div>I was petrified</div> </t>"#, r#"
+            t(
+                r#"<t t-name="web.A"> <div>I was petrified</div> </t>"#,
+                r#"
                 <t>
                     <xpath expr="." position="replace"> <div>$0</div><div>At first I was afraid</div> </xpath>
-                </t>"#),
+                </t>"#
+            ),
             r#"<div t-translation-context="from_op" t-name="web.A"><t t-name="web.A" t-translation-context="from_target"> <div>I was petrified</div> </t></div>"#
         );
         assert_eq!(
-            t(r#"<t t-name="web.A"> <div> A <span/> B <span/> C </div> </t>"#, r#"
+            t(
+                r#"<t t-name="web.A"> <div> A <span/> B <span/> C </div> </t>"#,
+                r#"
                 <t>
                     <xpath expr="./div" position="replace" mode="inner"> E <div/> F <span attr1="12"/> </xpath>
-                </t>"#),
+                </t>"#
+            ),
             r#"<t t-name="web.A" t-translation-context="from_target"> <div> E <div t-translation-context="from_op"/> F <span attr1="12" t-translation-context="from_op"/> </div> </t>"#
         );
         assert_eq!(
-            t(r#"<t t-name="web.A"> <div>AAB is the best<h2>Title</h2>text</div> </t>"#, r#"
+            t(
+                r#"<t t-name="web.A"> <div>AAB is the best<h2>Title</h2>text</div> </t>"#,
+                r#"
                 <t>
                     <xpath expr="./div/h2" position="before"> <h3>Other title</h3>Yooplahoo!<h4>Yet another title</h4> </xpath>
-                </t>"#),
+                </t>"#
+            ),
             r#"<t t-name="web.A" t-translation-context="from_target"> <div>AAB is the best <h3 t-translation-context="from_op">Other title</h3>Yooplahoo!<h4 t-translation-context="from_op">Yet another title</h4> <h2>Title</h2>text</div> </t>"#
         );
         assert_eq!(
-            t(r#"<t t-name="web.A"> <div>AAB is the best<h2>Title</h2><div><span>Ola</span></div></div> </t>"#, r#"
+            t(
+                r#"<t t-name="web.A"> <div>AAB is the best<h2>Title</h2><div><span>Ola</span></div></div> </t>"#,
+                r#"
                 <t>
                     <xpath expr="./div/h2" position="before"> <xpath expr="./div/div/span" position="move" /> </xpath>
-                </t>"#),
+                </t>"#
+            ),
             r#"<t t-name="web.A" t-translation-context="from_target"> <div>AAB is the best <span t-translation-context="from_target">Ola</span> <h2>Title</h2><div/></div> </t>"#
         );
         assert_eq!(
-            t(r#"<t t-name="web.A" t-translation-context="from_target"> <div>AAB is the best <h2>Title</h2> <div/> </div> </t>"#, r#"
+            t(
+                r#"<t t-name="web.A" t-translation-context="from_target"> <div>AAB is the best <h2>Title</h2> <div/> </div> </t>"#,
+                r#"
                 <t>
                     <xpath expr="./div/div" position="inside"> Hop! <xpath expr="./div/h2" position="move" /> <span>Yellow</span> </xpath>
-                </t>"#),
+                </t>"#
+            ),
             r#"<t t-name="web.A" t-translation-context="from_target"> <div>AAB is the best <div> Hop! <h2 t-translation-context="from_target">Title</h2> <span t-translation-context="from_op">Yellow</span> </div> </div> </t>"#
         );
-        assert_eq!(t("<t><div>\na \n </div></t>", "<t><xpath expr=\"./div\" position=\"inside\">4</xpath></t>"), "<t t-translation-context=\"from_target\"><div>\na4</div></t>");
         assert_eq!(
-            t(r#"<t t-name="web.A" t-translation-context="from_target"> <div> AAB is the best <h2>Title</h2> <div id="1"/> <div id="2"/> </div> </t>"#, r#"
+            t(
+                "<t><div>\na \n </div></t>",
+                "<t><xpath expr=\"./div\" position=\"inside\">4</xpath></t>"
+            ),
+            "<t t-translation-context=\"from_target\"><div>\na4</div></t>"
+        );
+        assert_eq!(
+            t(
+                r#"<t t-name="web.A" t-translation-context="from_target"> <div> AAB is the best <h2>Title</h2> <div id="1"/> <div id="2"/> </div> </t>"#,
+                r#"
                 <t>
                     <xpath expr="./div/h2" position="after"> Hop! <xpath expr="./div/div[@id=2]" position="move" /> <span>Yellow</span> </xpath>
-                </t>"#),
+                </t>"#
+            ),
             r#"<t t-name="web.A" t-translation-context="from_target"> <div> AAB is the best <h2>Title</h2> Hop! <div id="2" t-translation-context="from_target"/> <span t-translation-context="from_op">Yellow</span>  <div id="1"/>  </div> </t>"#
         );
         assert_eq!(
-            apply(r#"<t t-name="web.A"> <div attr1="12" attr2="a b" attr3="to remove" /> </t>"#, r#"
+            apply(
+                r#"<t t-name="web.A"> <div attr1="12" attr2="a b" attr3="to remove" /> </t>"#,
+                r#"
                 <t>
                     <xpath expr="./div" position="attributes">
                         <attribute name="attr1">45</attribute>
@@ -556,27 +705,50 @@ mod tests {
                         <attribute name="attr2" remove="a" separator=" "></attribute>
                         <attribute name="attr4">new</attribute>
                     </xpath>
-                </t>"#, "test/from_op", true).unwrap(),
+                </t>"#,
+                "test/from_op",
+                true
+            )
+            .unwrap(),
             r#"<t t-name="web.A" t-translation-context="from_target"> <!-- From file: test/from_op ; expr="./div" ; position="attributes" --><div attr1="45" attr2="b c" t-translation-context-attr1="from_op" attr4="new" t-translation-context-attr4="from_op"/> </t>"#
         );
     }
 
     #[test]
     fn hasclass() {
-        assert_eq!(t(r#"<t><div class="abcd e abc"/></t>"#, r#"<t><xpath expr="./div[hasclass('abc', 'abcd' )]" position="replace"></xpath></t>"#), r#"<t t-translation-context="from_target"/>"#);
-        assert!(apply(r#"<t><div class="dabc"/></t>"#, r#"<t><xpath expr="./div[hasclass('abc')]" position="replace"></xpath></t>"#, "test/from_op", false).is_err());
+        assert_eq!(
+            t(
+                r#"<t><div class="abcd e abc"/></t>"#,
+                r#"<t><xpath expr="./div[hasclass('abc', 'abcd' )]" position="replace"></xpath></t>"#
+            ),
+            r#"<t t-translation-context="from_target"/>"#
+        );
+        assert!(
+            apply(
+                r#"<t><div class="dabc"/></t>"#,
+                r#"<t><xpath expr="./div[hasclass('abc')]" position="replace"></xpath></t>"#,
+                "test/from_op",
+                false
+            )
+            .is_err()
+        );
         assert!(apply(r#"<t><div class="dabc"/></t>"#, r#"<t><xpath expr="./div[ends-with(@class, 'bc')]" position="replace"></xpath></t>"#, "test/from_op", false).is_err());
     }
 
     #[test]
     fn warnings() {
         let mut dom = Dom::new();
-        let root = dom.parse(r#"<t t-name="web.A"><div class="my-class" /></t>"#).unwrap();
+        let root = dom
+            .parse(r#"<t t-name="web.A"><div class="my-class" /></t>"#)
+            .unwrap();
         let ops = dom.parse(r#"<t t-inherit="web.A"><xpath expr="*[contains(@class, 'my-class')]" position="inside"><span/></xpath></t>"#).unwrap();
         dom.node_mut(root).set(TCTX, "from_target");
         let mut js = JsInheritance::new(true);
         let r = js.apply(&mut dom, root, ops, "").unwrap();
-        assert_eq!(dom.serialize(r), r#"<t t-name="web.A" t-translation-context="from_target"><div class="my-class"><span t-translation-context=""/></div></t>"#);
+        assert_eq!(
+            dom.serialize(r),
+            r#"<t t-name="web.A" t-translation-context="from_target"><div class="my-class"><span t-translation-context=""/></div></t>"#
+        );
         assert_eq!(js.warnings.len(), 1);
     }
 }

@@ -2,12 +2,15 @@
 
 Usage: .venv/bin/python benches/compare.py
 """
+
 import os
 import sys
 import time
 import types
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tests', 'conformance'))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(__file__), "..", "tests", "conformance")
+)
 from reference import make_loader  # noqa: E402
 from markupsafe import Markup  # noqa: E402
 
@@ -25,7 +28,7 @@ def reference_renderer():
     class MockRegistry:
         def __init__(self):
             self.db_name = None
-            self._template_code__ = LRU(_REGISTRY_CACHES['templates'])
+            self._template_code__ = LRU(_REGISTRY_CACHES["templates"])
 
     registry = MockRegistry()
 
@@ -39,13 +42,18 @@ def reference_renderer():
         def _preload_trees(self, refs):
             values = {}
             for ref in refs:
-                tree, vid = self.env.context['load'](ref)
-                values[ref] = values[vid] = {'tree': tree, 'template': etree.tostring(tree, encoding='unicode'), 'xmlid': vid, 'ref': None}
+                tree, vid = self.env.context["load"](ref)
+                values[ref] = values[vid] = {
+                    "tree": tree,
+                    "template": etree.tostring(tree, encoding="unicode"),
+                    "xmlid": vid,
+                    "ref": None,
+                }
             return values
 
         def _prepare_environment(self, values):
-            values['true'] = True
-            values['false'] = False
+            values["true"] = True
+            values["false"] = False
             return self
 
     class MockCr:
@@ -54,7 +62,9 @@ def reference_renderer():
 
     class MockTransaction:
         def __init__(self):
-            self.ormcaches__ = {name: LRU(size) for name, size in _REGISTRY_CACHES.items()}
+            self.ormcaches__ = {
+                name: LRU(size) for name, size in _REGISTRY_CACHES.items()
+            }
             self.registry = registry
 
     transaction = MockTransaction()
@@ -76,15 +86,26 @@ def reference_renderer():
 
     def render(name, values, load):
         return renderer._render(name, values, load=load, minimal_qcontext=True)
+
     return render
 
 
-ROWS = [types.SimpleNamespace(id=i, name=f'Product <{i}>', price=i * 1.5, qty=i % 7, active=i % 3 != 0,
-                              tags=['a', 'b'] if i % 2 else []) for i in range(500)]
+ROWS = [
+    types.SimpleNamespace(
+        id=i,
+        name=f"Product <{i}>",
+        price=i * 1.5,
+        qty=i % 7,
+        active=i % 3 != 0,
+        tags=["a", "b"] if i % 2 else [],
+    )
+    for i in range(500)
+]
 
 BENCHES = {
-    'table_500_rows': ({
-        'main': '''<t t-name="main"><table class="table">
+    "table_500_rows": (
+        {
+            "main": """<t t-name="main"><table class="table">
     <thead><tr><th>Id</th><th>Name</th><th>Price</th><th>Qty</th><th>Tags</th></tr></thead>
     <tbody>
         <tr t-foreach="rows" t-as="row" t-att-class="'odd' if row_odd else 'even'" t-att-data-id="row.id">
@@ -95,19 +116,35 @@ BENCHES = {
             <td><t t-foreach="row.tags" t-as="tag"><span class="badge" t-out="tag"/></t></td>
         </tr>
     </tbody>
-</table></t>'''}, {'rows': ROWS}),
-    'nested_calls': ({
-        'main': '''<t t-name="main"><div class="page"><t t-foreach="rows[:200]" t-as="row"><t t-call="card"><t t-set="title" t-value="row.name"/><p t-out="row.price"/></t></t></div></t>''',
-        'card': '''<t t-name="card"><div class="card"><h3 t-out="row.name"/><div class="body"><t t-out="0"/></div><t t-call="footer"/></div></t>''',
-        'footer': '''<t t-name="footer"><footer t-attf-class="f {{ 'on' if row.active else 'off' }}">#<t t-out="row.id"/></footer></t>''',
-    }, {'rows': ROWS}),
-    'static_page': ({
-        'main': '<t t-name="main"><html><head><title>T</title><meta charset="utf-8"/></head><body>' + ''.join(
-            f'<section class="s{i}"><h2>Section {i}</h2><p>Lorem ipsum dolor sit amet, consectetur adipiscing elit.</p><ul><li>a</li><li>b</li></ul></section>' for i in range(100)
-        ) + '<p t-out="title"/></body></html></t>'}, {'title': 'Hello'}),
-    'small_snippet': ({
-        'main': '<t t-name="main"><div t-att-class="cls"><span t-if="user" t-out="user"/><t t-else="">anonymous</t></div></t>',
-    }, {'cls': 'x', 'user': 'Bob <b>'}),
+</table></t>"""
+        },
+        {"rows": ROWS},
+    ),
+    "nested_calls": (
+        {
+            "main": """<t t-name="main"><div class="page"><t t-foreach="rows[:200]" t-as="row"><t t-call="card"><t t-set="title" t-value="row.name"/><p t-out="row.price"/></t></t></div></t>""",
+            "card": """<t t-name="card"><div class="card"><h3 t-out="row.name"/><div class="body"><t t-out="0"/></div><t t-call="footer"/></div></t>""",
+            "footer": """<t t-name="footer"><footer t-attf-class="f {{ 'on' if row.active else 'off' }}">#<t t-out="row.id"/></footer></t>""",
+        },
+        {"rows": ROWS},
+    ),
+    "static_page": (
+        {
+            "main": '<t t-name="main"><html><head><title>T</title><meta charset="utf-8"/></head><body>'
+            + "".join(
+                f'<section class="s{i}"><h2>Section {i}</h2><p>Lorem ipsum dolor sit amet, consectetur adipiscing elit.</p><ul><li>a</li><li>b</li></ul></section>'
+                for i in range(100)
+            )
+            + '<p t-out="title"/></body></html></t>'
+        },
+        {"title": "Hello"},
+    ),
+    "small_snippet": (
+        {
+            "main": '<t t-name="main"><div t-att-class="cls"><span t-if="user" t-out="user"/><t t-else="">anonymous</t></div></t>',
+        },
+        {"cls": "x", "user": "Bob <b>"},
+    ),
 }
 
 
@@ -124,25 +161,40 @@ def timeit(fn, min_time=0.5):
 
 def main():
     from odoo.addons.base.models.ir_qweb import render as py_render
-    print(f"{'benchmark':<16} {'py render()':>12} {'qweb_rs':>11} {'speedup':>8} | {'py cached':>11} {'qweb_rs*':>11} {'speedup':>8}")
+
+    print(
+        f"{'benchmark':<16} {'py render()':>12} {'qweb_rs':>11} {'speedup':>8} | {'py cached':>11} {'qweb_rs*':>11} {'speedup':>8}"
+    )
     for name, (templates, values) in BENCHES.items():
         # fresh caches per benchmark: templates are all named 'main'
         ref = reference_renderer()
         engine = qweb_rs.Engine(trust_names=True)
         load = make_loader(templates)
-        a = ref('main', values, load)
-        b = qweb_rs.render('main', values, load)
-        c = Markup(engine.render('main', {**values, 'true': True, 'false': False}, load))
-        assert str(a) == str(b) == str(c), f'{name}: outputs differ'
-        t_py = timeit(lambda: py_render('main', values, load), min_time=0.3)
-        t_ref = timeit(lambda: ref('main', values, load))
-        t_rs = timeit(lambda: qweb_rs.render('main', values, load))
-        t_eng = timeit(lambda: engine.render('main', {**values, 'true': True, 'false': False}, load))
-        print(f'{name:<16} {t_py * 1e3:10.3f}ms {t_rs * 1e3:9.3f}ms {t_py / t_rs:7.1f}x | '
-              f'{t_ref * 1e3:9.3f}ms {t_eng * 1e3:9.3f}ms {t_ref / t_eng:7.1f}x')
-    print('py render() = odoo ir_qweb.render() (recompiles every call); qweb_rs = qweb_rs.render() (same API)')
-    print('py cached   = IrQweb with its compiled-code cache kept;    qweb_rs* = Engine(trust_names=True).render()')
+        a = ref("main", values, load)
+        b = qweb_rs.render("main", values, load)
+        c = Markup(
+            engine.render("main", {**values, "true": True, "false": False}, load)
+        )
+        assert str(a) == str(b) == str(c), f"{name}: outputs differ"
+        t_py = timeit(lambda: py_render("main", values, load), min_time=0.3)
+        t_ref = timeit(lambda: ref("main", values, load))
+        t_rs = timeit(lambda: qweb_rs.render("main", values, load))
+        t_eng = timeit(
+            lambda: engine.render(
+                "main", {**values, "true": True, "false": False}, load
+            )
+        )
+        print(
+            f"{name:<16} {t_py * 1e3:10.3f}ms {t_rs * 1e3:9.3f}ms {t_py / t_rs:7.1f}x | "
+            f"{t_ref * 1e3:9.3f}ms {t_eng * 1e3:9.3f}ms {t_ref / t_eng:7.1f}x"
+        )
+    print(
+        "py render() = odoo ir_qweb.render() (recompiles every call); qweb_rs = qweb_rs.render() (same API)"
+    )
+    print(
+        "py cached   = IrQweb with its compiled-code cache kept;    qweb_rs* = Engine(trust_names=True).render()"
+    )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

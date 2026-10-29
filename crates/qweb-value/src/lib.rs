@@ -12,6 +12,8 @@
 //! assert_eq!(out, "<p>&lt;world&gt;</p>");
 //! ```
 
+#![deny(missing_docs)]
+
 pub mod ops;
 pub mod value;
 
@@ -32,13 +34,19 @@ pub type Scope = IndexMap<Arc<str>, Value>;
 /// Render options (`env.context`).
 #[derive(Clone, Default)]
 pub struct Context {
+    /// Context entries (`lang`, `preserve_comments`, ...).
     pub options: Arc<IndexMap<String, Value>>,
+    /// Namespaces inherited from the calling template.
     pub nsmap: Option<NsMap>,
 }
 
 impl Context {
+    /// A context with the given entries.
     pub fn new<I: IntoIterator<Item = (String, Value)>>(options: I) -> Self {
-        Context { options: Arc::new(options.into_iter().collect()), nsmap: None }
+        Context {
+            options: Arc::new(options.into_iter().collect()),
+            nsmap: None,
+        }
     }
 }
 
@@ -54,6 +62,8 @@ struct HostInner {
     templates: RwLock<HashMap<String, Arc<str>>>,
     loader: Option<Box<LoaderFn>>,
     warnings: Mutex<Vec<String>>,
+    /// [`SLOT_KEY`], allocated once.
+    slot: Arc<str>,
 }
 
 /// Key of `values[0]` (the t-call body); not reachable from expressions.
@@ -66,36 +76,65 @@ impl Default for ValueHost {
 }
 
 impl ValueHost {
-    pub fn new() -> Self {
-        ValueHost {
-            inner: Arc::new(HostInner { templates: RwLock::new(HashMap::new()), loader: None, warnings: Mutex::new(Vec::new()) }),
-        }
-    }
-
-    pub fn with_loader(loader: impl Fn(&TemplateRef) -> Result<String> + Send + Sync + 'static) -> Self {
+    fn build(loader: Option<Box<LoaderFn>>) -> Self {
         ValueHost {
             inner: Arc::new(HostInner {
                 templates: RwLock::new(HashMap::new()),
-                loader: Some(Box::new(loader)),
+                loader,
                 warnings: Mutex::new(Vec::new()),
+                slot: Arc::from(SLOT_KEY),
             }),
         }
     }
 
-    pub fn add_template(&self, name: &str, source: &str) {
-        self.inner.templates.write().unwrap().insert(name.to_owned(), Arc::from(source));
+    /// A host without templates (add them with [`ValueHost::add_template`]).
+    pub fn new() -> Self {
+        Self::build(None)
     }
 
+    /// A host that asks `loader` for the source of templates that were not
+    /// added with [`ValueHost::add_template`].
+    pub fn with_loader(
+        loader: impl Fn(&TemplateRef) -> Result<String> + Send + Sync + 'static,
+    ) -> Self {
+        Self::build(Some(Box::new(loader)))
+    }
+
+    /// Register (or replace) the XML source of template `name`. Engines that
+    /// already compiled it keep their cached version.
+    pub fn add_template(&self, name: &str, source: &str) {
+        self.inner
+            .templates
+            .write()
+            .unwrap()
+            .insert(name.to_owned(), Arc::from(source));
+    }
+
+    /// Warnings emitted so far (unknown directives, ...).
     pub fn warnings(&self) -> Vec<String> {
         self.inner.warnings.lock().unwrap().clone()
     }
 
+    /// Return and clear the warnings emitted so far.
+    pub fn take_warnings(&self) -> Vec<String> {
+        std::mem::take(&mut *self.inner.warnings.lock().unwrap())
+    }
+
     /// Convenience: build an engine and render `template` (`render()` semantics:
-    /// `true`/`false` are added to the values).
-    pub fn render<'a, I: IntoIterator<Item = (&'a str, Value)>>(&self, template: &str, values: I) -> Result<String> {
+    /// `true`/`false` are added to the values). Nothing is cached between
+    /// calls: to render several times, keep an [`Engine`].
+    pub fn render<'a, I: IntoIterator<Item = (&'a str, Value)>>(
+        &self,
+        template: &str,
+        values: I,
+    ) -> Result<String> {
         let engine = Engine::new(self.clone());
         let scope = self.make_scope(values);
-        engine.render(&qweb_core::compile::template_ref(template), scope, Context::default())
+        engine.render(
+            &qweb_core::TemplateRef::parse(template),
+            scope,
+            Context::default(),
+        )
     }
 
     /// Build the initial scope like `ir_qweb.render` (`true`, `false` added).
@@ -112,7 +151,9 @@ fn pairs_of(v: &Value) -> Result<Option<Vec<(Value, Value)>>> {
     Ok(match v {
         Value::Dict(d) => Some(d.values().cloned().collect()),
         Value::List(items) | Value::Tuple(items) => {
-            let first = items.first().ok_or_else(|| Error::other("IndexError: list index out of range"))?;
+            let first = items
+                .first()
+                .ok_or_else(|| Error::other("IndexError: list index out of range"))?;
             if !matches!(first, Value::List(_) | Value::Tuple(_)) {
                 if items.len() != 2 {
                     return Err(Error::value(format!(
@@ -154,14 +195,14 @@ impl Host for ValueHost {
     type Scope = Scope;
     type Opaque = ();
     type Context = Context;
-    type Iter = std::vec::IntoIter<Result<Value>>;
+    type Iter = LoopIter;
     type Hook = ();
 
     fn key(&self, name: &str) -> Arc<str> {
         Arc::from(name)
     }
     fn slot_key(&self) -> Arc<str> {
-        Arc::from(SLOT_KEY)
+        self.inner.slot.clone()
     }
     fn none(&self) -> Value {
         Value::None
@@ -210,7 +251,11 @@ impl Host for ValueHost {
         Value::dict_from(items)
     }
     fn slice(&self, lower: Option<Value>, upper: Option<Value>, step: Option<Value>) -> Value {
-        Value::Slice(Arc::new((lower.unwrap_or(Value::None), upper.unwrap_or(Value::None), step.unwrap_or(Value::None))))
+        Value::Slice(Arc::new((
+            lower.unwrap_or(Value::None),
+            upper.unwrap_or(Value::None),
+            step.unwrap_or(Value::None),
+        )))
     }
     fn builtin(&self, name: &str) -> Option<Value> {
         Builtin::from_name(name).map(Value::Builtin)
@@ -240,21 +285,7 @@ impl Host for ValueHost {
         }
     }
     fn scope_update_value(&self, scope: &mut Scope, value: &Value) -> Result<()> {
-        let pairs: Vec<(Value, Value)> = match value {
-            Value::Dict(d) => d.values().cloned().collect(),
-            other => {
-                let mut out = Vec::new();
-                for item in other.iter_items()? {
-                    let kv = item.iter_items()?;
-                    if kv.len() != 2 {
-                        return Err(Error::value("dictionary update sequence element has wrong length"));
-                    }
-                    out.push((kv[0].clone(), kv[1].clone()));
-                }
-                out
-            }
-        };
-        for (k, v) in pairs {
+        for (k, v) in ops::dict_pairs(value)? {
             scope.insert(scope_key(&k)?, v);
         }
         Ok(())
@@ -277,14 +308,24 @@ impl Host for ValueHost {
     fn get_item(&self, obj: &Value, key: &Value) -> Result<Value> {
         ops::get_item(obj, key)
     }
-    fn call(&self, func: &Value, args: Vec<Value>, kwargs: Vec<(Arc<str>, Value)>) -> Result<Value> {
+    fn call(
+        &self,
+        func: &Value,
+        args: Vec<Value>,
+        kwargs: Vec<(Arc<str>, Value)>,
+    ) -> Result<Value> {
         if !kwargs.is_empty() {
-            return Err(Error::type_error("keyword arguments are not supported by qweb-value builtins"));
+            return Err(Error::type_error(
+                "keyword arguments are not supported by qweb-value builtins",
+            ));
         }
         match func {
             Value::Builtin(b) => ops::call_builtin(*b, args),
             Value::Method(m) => ops::call_method(&m.0, &m.1, &args),
-            other => Err(Error::type_error(format!("'{}' object is not callable", other.type_name()))),
+            other => Err(Error::type_error(format!(
+                "'{}' object is not callable",
+                other.type_name()
+            ))),
         }
     }
     fn unary(&self, op: UnOp, v: &Value) -> Result<Value> {
@@ -305,7 +346,9 @@ impl Host for ValueHost {
             (Value::Bool(x), Value::Bool(y)) => x == y,
             (Value::Int(x), Value::Int(y)) => x == y && (-5..=256).contains(x),
             (Value::Str(x), Value::Str(y)) => Arc::ptr_eq(x, y),
-            (Value::List(x), Value::List(y)) | (Value::Tuple(x), Value::Tuple(y)) => Arc::ptr_eq(x, y),
+            (Value::List(x), Value::List(y)) | (Value::Tuple(x), Value::Tuple(y)) => {
+                Arc::ptr_eq(x, y)
+            }
             (Value::Dict(x), Value::Dict(y)) => Arc::ptr_eq(x, y),
             (Value::Object(x), Value::Object(y)) => Arc::ptr_eq(x, y),
             (Value::Lazy(x), Value::Lazy(y)) => Arc::ptr_eq(x, y),
@@ -325,7 +368,12 @@ impl Host for ValueHost {
     fn merge_dict(&self, base: Option<&Value>, items: Vec<(Value, Value)>) -> Result<Value> {
         let mut pairs = match base {
             Some(Value::Dict(d)) => d.values().cloned().collect(),
-            Some(other) => return Err(Error::type_error(format!("'{}' object is not a mapping", other.type_name()))),
+            Some(other) => {
+                return Err(Error::type_error(format!(
+                    "'{}' object is not a mapping",
+                    other.type_name()
+                )));
+            }
             None => Vec::new(),
         };
         pairs.extend(items);
@@ -363,27 +411,46 @@ impl Host for ValueHost {
     }
 
     fn iterate(&self, v: Value) -> Result<LoopSource<Self::Iter>> {
-        let (items, size, mapping) = match &v {
-            Value::Int(n) => ((0..*n).map(Value::Int).collect(), Some((*n).max(0) as usize), false),
-            Value::Dict(d) => (
-                d.values().map(|(k, v)| Value::Tuple(Arc::new(vec![k.clone(), v.clone()]))).collect(),
-                Some(d.len()),
-                true,
-            ),
-            Value::List(_) | Value::Tuple(_) | Value::Set(_) | Value::Str(_) | Value::Markup(_) | Value::Bytes(_) => {
+        let (iter, size, mapping) = match &v {
+            Value::Int(n) => (LoopIter::Range(0..*n), Some((*n).max(0) as usize), false),
+            Value::Dict(d) => {
+                let items: Vec<Value> = d
+                    .values()
+                    .map(|(k, v)| Value::Tuple(Arc::new(vec![k.clone(), v.clone()])))
+                    .collect();
+                (LoopIter::Items(items.into_iter()), Some(d.len()), true)
+            }
+            Value::List(_)
+            | Value::Tuple(_)
+            | Value::Set(_)
+            | Value::Str(_)
+            | Value::Markup(_)
+            | Value::Bytes(_) => {
                 let items = v.iter_items()?;
                 let n = items.len();
-                (items, Some(n), false)
+                (LoopIter::Items(items.into_iter()), Some(n), false)
             }
-            Value::Object(_) => (v.iter_items()?, None, false),
-            other => return Err(Error::type_error(format!("'{}' object is not iterable", other.type_name()))),
+            Value::Object(_) => (LoopIter::Items(v.iter_items()?.into_iter()), None, false),
+            other => {
+                return Err(Error::type_error(format!(
+                    "'{}' object is not iterable",
+                    other.type_name()
+                )));
+            }
         };
-        Ok(LoopSource { iter: items.into_iter().map(Ok).collect::<Vec<_>>().into_iter(), size, mapping })
+        Ok(LoopSource {
+            iter,
+            size,
+            mapping,
+        })
     }
     fn unpack_pair(&self, item: Value) -> Result<(Value, Value)> {
         let items = item.iter_items()?;
         if items.len() != 2 {
-            return Err(Error::value(format!("too many values to unpack (expected 2, got {})", items.len())));
+            return Err(Error::value(format!(
+                "too many values to unpack (expected 2, got {})",
+                items.len()
+            )));
         }
         let mut it = items.into_iter();
         Ok((it.next().unwrap(), it.next().unwrap()))
@@ -403,7 +470,12 @@ impl Host for ValueHost {
     }
 
     fn compile_options(&self, ctx: &Context) -> CompileOptions {
-        let truthy = |k: &str| ctx.options.get(k).map(|v| v.truthy().unwrap_or(false)).unwrap_or(false);
+        let truthy = |k: &str| {
+            ctx.options
+                .get(k)
+                .map(|v| v.truthy().unwrap_or(false))
+                .unwrap_or(false)
+        };
         let mut extra = Vec::new();
         if let Some(lang) = ctx.options.get("lang") {
             extra.push(format!("lang={}", lang.repr()));
@@ -412,18 +484,30 @@ impl Host for ValueHost {
             preserve_comments: truthy("preserve_comments"),
             edit_translations: truthy("edit_translations"),
             dev_mode: false,
-            nsmap: ctx.nsmap.as_ref().map(|n| (**n).clone()).unwrap_or_default(),
+            nsmap: ctx
+                .nsmap
+                .as_ref()
+                .map(|n| (**n).clone())
+                .unwrap_or_default(),
             extra,
         }
     }
-    fn call_context(&self, ctx: &Context, options: Option<&Value>, nsmap: Option<&NsMap>) -> Result<Context> {
+    fn call_context(
+        &self,
+        ctx: &Context,
+        options: Option<&Value>,
+        nsmap: Option<&NsMap>,
+    ) -> Result<Context> {
         let mut opts = (*ctx.options).clone();
         if let Some(Value::Dict(d)) = options {
             for (k, v) in d.values() {
                 opts.insert(k.to_str()?, v.clone());
             }
         }
-        Ok(Context { options: Arc::new(opts), nsmap: nsmap.cloned().or_else(|| ctx.nsmap.clone()) })
+        Ok(Context {
+            options: Arc::new(opts),
+            nsmap: nsmap.cloned().or_else(|| ctx.nsmap.clone()),
+        })
     }
     fn load(&self, template: &TemplateRef, _ctx: &Context) -> Result<Loaded<Self>> {
         let name = template.to_string();
@@ -434,13 +518,43 @@ impl Host for ValueHost {
                 None => return Err(Error::value(format!("template not found: {name}"))),
             },
         };
-        Ok(Loaded::Source { source, viewid: None, xmlid: None })
+        Ok(Loaded::Source {
+            source,
+            viewid: None,
+            xmlid: None,
+        })
     }
     fn empty_options(&self) -> Value {
         Value::Dict(Arc::new(IndexMap::new()))
     }
     fn warn(&self, msg: &str) {
         self.inner.warnings.lock().unwrap().push(msg.to_owned());
+    }
+}
+
+/// Items of a `t-foreach` loop over a [`Value`].
+pub enum LoopIter {
+    /// `t-foreach` over an int: `range(n)`, produced lazily.
+    Range(std::ops::Range<i64>),
+    /// Items collected from an iterable.
+    Items(std::vec::IntoIter<Value>),
+}
+
+impl Iterator for LoopIter {
+    type Item = Result<Value>;
+
+    fn next(&mut self) -> Option<Result<Value>> {
+        match self {
+            LoopIter::Range(r) => r.next().map(|i| Ok(Value::Int(i))),
+            LoopIter::Items(it) => it.next().map(Ok),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            LoopIter::Range(r) => r.size_hint(),
+            LoopIter::Items(it) => it.size_hint(),
+        }
     }
 }
 
@@ -466,14 +580,26 @@ pub fn from_json(v: &serde_json::Value) -> Value {
                     return Value::Tuple(Arc::new(items.iter().map(from_json).collect()));
                 }
                 if let Some(J::Object(fields)) = map.get("$object") {
-                    return Value::Object(Arc::new(fields.iter().map(|(k, v)| (Arc::from(k.as_str()), from_json(v))).collect()));
+                    return Value::Object(Arc::new(
+                        fields
+                            .iter()
+                            .map(|(k, v)| (Arc::from(k.as_str()), from_json(v)))
+                            .collect(),
+                    ));
                 }
                 if let Some(J::Number(n)) = map.get("$float") {
                     return Value::Float(n.as_f64().unwrap_or(0.0));
                 }
             }
             Value::Dict(Arc::new(
-                map.iter().map(|(k, v)| (HKey::Str(Arc::from(k.as_str())), (Value::str(k), from_json(v)))).collect(),
+                map.iter()
+                    .map(|(k, v)| {
+                        (
+                            HKey::Str(Arc::from(k.as_str())),
+                            (Value::str(k), from_json(v)),
+                        )
+                    })
+                    .collect(),
             ))
         }
     }

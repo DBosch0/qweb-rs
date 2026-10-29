@@ -9,11 +9,12 @@ Both start from the serialized source and spec and produce a serialized
 result (the Python side includes lxml parsing and serialization).
 Cases come from tests/inherit/capture_views.py (QWEB_INHERIT_CASES).
 """
+
 import json
 import os
 import sys
 
-sys.path.insert(0, os.environ.get('ODOO_PATH', '/home/david/Documents/odoo_src/odoo'))
+sys.path.insert(0, os.environ.get("ODOO_PATH", "/home/david/Documents/odoo_src/odoo"))
 from lxml import etree  # noqa: E402
 from odoo.tools.template_inheritance import apply_inheritance_specs  # noqa: E402
 
@@ -25,23 +26,25 @@ with open(path) as f:
 
 
 def py(case):
-    source = etree.fromstring(case['source'])
-    spec = etree.fromstring(case['spec'])
+    source = etree.fromstring(case["source"])
+    spec = etree.fromstring(case["spec"])
     try:
-        res = apply_inheritance_specs(source, spec, inherit_branding=case['branding'])
+        res = apply_inheritance_specs(source, spec, inherit_branding=case["branding"])
     except Exception:  # noqa: BLE001
         return None
-    return etree.tostring(res, encoding='unicode', with_tail=False)
+    return etree.tostring(res, encoding="unicode", with_tail=False)
 
 
 def rs(case):
     try:
-        return qweb_rs.apply_inheritance(case['source'], [case['spec']], case['branding'])
+        return qweb_rs.apply_inheritance(
+            case["source"], [case["spec"]], case["branding"]
+        )
     except ValueError:
         return None
 
 
-fn = {'py': py, 'rs': rs, 'none': None}[engine]
+fn = {"py": py, "rs": rs, "none": None}[engine]
 if fn:
     for case in cases:
         fn(case)

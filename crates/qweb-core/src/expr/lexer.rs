@@ -1,38 +1,100 @@
 //! Tokenizer for the Python expression dialect used in QWeb templates.
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Tok {
+/// A token. Keywords are [`Tok::Name`]s; the parser tells them apart.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Tok {
+    /// Identifier or keyword.
     Name(String),
-    /// Integer literal, normalised to decimal digits when it fits in i64,
-    /// otherwise kept as the original source text (big integers).
+    /// Integer literal that fits in an `i64`.
     Int(i64),
+    /// Decimal integer literal too large for an `i64`: its digits, without
+    /// `_` separators and leading zeros.
     BigInt(String),
+    /// Float literal.
     Float(f64),
+    /// String literal (adjacent literals are concatenated by the parser).
     Str(String),
+    /// Bytes literal.
     Bytes(Vec<u8>),
+    /// Operator or delimiter.
     Op(&'static str),
+    /// End of input. Always the last token.
     End,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum LexError {
+#[cfg_attr(test, derive(Debug))]
+pub(crate) enum LexError {
     /// Construct valid in Python that the native parser does not handle
     /// (f-strings, imaginary numbers, `\N{...}` escapes, ...).
     Unsupported(String),
+    /// Invalid syntax.
     Syntax(String),
+    /// Identifier containing `__`.
+    Dunder(String),
 }
 
-const OPS3: [&str; 5] = ["**=", "//=", ">>=", "<<=", "..."];
-const OPS2: [&str; 19] = [
-    "**", "//", "<<", ">>", "<=", ">=", "==", "!=", "->", ":=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=",
-    "@=",
-];
-const OPS1: [&str; 23] = [
-    "+", "-", "*", "/", "%", "@", "&", "|", "^", "~", "<", ">", "(", ")", "[", "]", "{", "}", ",", ":", ".", ";",
-    "=",
-];
+/// The operator or delimiter at the start of `b` (longest match), if any.
+fn operator(b: &[u8]) -> Option<&'static str> {
+    let at = |i: usize| b.get(i).copied().unwrap_or(0);
+    Some(match (at(0), at(1), at(2)) {
+        (b'*', b'*', b'=') => "**=",
+        (b'/', b'/', b'=') => "//=",
+        (b'>', b'>', b'=') => ">>=",
+        (b'<', b'<', b'=') => "<<=",
+        (b'.', b'.', b'.') => "...",
+        (b'*', b'*', _) => "**",
+        (b'/', b'/', _) => "//",
+        (b'<', b'<', _) => "<<",
+        (b'>', b'>', _) => ">>",
+        (b'<', b'=', _) => "<=",
+        (b'>', b'=', _) => ">=",
+        (b'=', b'=', _) => "==",
+        (b'!', b'=', _) => "!=",
+        (b'-', b'>', _) => "->",
+        (b':', b'=', _) => ":=",
+        (b'+', b'=', _) => "+=",
+        (b'-', b'=', _) => "-=",
+        (b'*', b'=', _) => "*=",
+        (b'/', b'=', _) => "/=",
+        (b'%', b'=', _) => "%=",
+        (b'&', b'=', _) => "&=",
+        (b'|', b'=', _) => "|=",
+        (b'^', b'=', _) => "^=",
+        (b'@', b'=', _) => "@=",
+        (b'+', _, _) => "+",
+        (b'-', _, _) => "-",
+        (b'*', _, _) => "*",
+        (b'/', _, _) => "/",
+        (b'%', _, _) => "%",
+        (b'@', _, _) => "@",
+        (b'&', _, _) => "&",
+        (b'|', _, _) => "|",
+        (b'^', _, _) => "^",
+        (b'~', _, _) => "~",
+        (b'<', _, _) => "<",
+        (b'>', _, _) => ">",
+        (b'(', _, _) => "(",
+        (b')', _, _) => ")",
+        (b'[', _, _) => "[",
+        (b']', _, _) => "]",
+        (b'{', _, _) => "{",
+        (b'}', _, _) => "}",
+        (b',', _, _) => ",",
+        (b':', _, _) => ":",
+        (b'.', _, _) => ".",
+        (b';', _, _) => ";",
+        (b'=', _, _) => "=",
+        _ => return None,
+    })
+}
 
-pub fn tokenize(src: &str) -> Result<Vec<Tok>, LexError> {
+/// Split `src` into tokens, ending with [`Tok::End`].
+///
+/// Identifiers containing `__` are rejected here ([`LexError::Dunder`]), as
+/// `_compile_expr_tokens` does for every `NAME` token. String bodies are not
+/// checked: names inside f-strings are checked by the host when it compiles
+/// the expression itself.
+pub(crate) fn tokenize(src: &str) -> Result<Vec<Tok>, LexError> {
     let b = src.as_bytes();
     let mut i = 0;
     let mut toks = Vec::new();
@@ -67,40 +129,32 @@ pub fn tokenize(src: &str) -> Result<Vec<Tok>, LexError> {
             continue;
         }
         if c == b'_' || c.is_ascii_alphabetic() || c >= 0x80 {
-            let start = i;
             let rest = &src[i..];
-            let mut end = start;
-            for (off, ch) in rest.char_indices() {
-                if ch == '_' || ch.is_alphanumeric() {
-                    end = start + off + ch.len_utf8();
-                } else {
-                    break;
-                }
+            let len = rest
+                .find(|ch: char| ch != '_' && !ch.is_alphanumeric())
+                .unwrap_or(rest.len());
+            if len == 0 {
+                return Err(LexError::Syntax(format!(
+                    "invalid character {:?}",
+                    rest.chars().next().unwrap()
+                )));
             }
-            if end == start {
-                return Err(LexError::Syntax(format!("invalid character {:?}", rest.chars().next().unwrap())));
+            let name = &rest[..len];
+            if name.contains("__") {
+                return Err(LexError::Dunder(name.to_owned()));
             }
-            toks.push(Tok::Name(src[start..end].to_owned()));
-            i = end;
+            toks.push(Tok::Name(name.to_owned()));
+            i += len;
             continue;
         }
-        let rest = &src[i..];
-        if let Some(op) = OPS3.iter().find(|op| rest.starts_with(**op)) {
-            toks.push(Tok::Op(op));
-            i += 3;
-            continue;
-        }
-        if let Some(op) = OPS2.iter().find(|op| rest.starts_with(**op)) {
-            toks.push(Tok::Op(op));
-            i += 2;
-            continue;
-        }
-        if let Some(op) = OPS1.iter().find(|op| rest.starts_with(**op)) {
-            toks.push(Tok::Op(op));
-            i += 1;
-            continue;
-        }
-        return Err(LexError::Syntax(format!("invalid character {:?}", rest.chars().next().unwrap())));
+        let Some(op) = operator(&b[i..]) else {
+            return Err(LexError::Syntax(format!(
+                "invalid character {:?}",
+                src[i..].chars().next().unwrap()
+            )));
+        };
+        toks.push(Tok::Op(op));
+        i += op.len();
     }
     toks.push(Tok::End);
     Ok(toks)
@@ -109,11 +163,15 @@ pub fn tokenize(src: &str) -> Result<Vec<Tok>, LexError> {
 fn number(src: &str, start: usize) -> Result<(Tok, usize), LexError> {
     let b = src.as_bytes();
     let mut i = start;
-    if b[i] == b'0' && i + 1 < b.len() && matches!(b[i + 1], b'x' | b'X' | b'o' | b'O' | b'b' | b'B') {
+    if b[i] == b'0'
+        && i + 1 < b.len()
+        && matches!(b[i + 1], b'x' | b'X' | b'o' | b'O' | b'b' | b'B')
+    {
         let radix = match b[i + 1] {
             b'x' | b'X' => 16,
             b'o' | b'O' => 8,
-            _ => 2,
+            b'b' | b'B' => 2,
+            _ => unreachable!(),
         };
         i += 2;
         let ds = i;
@@ -169,7 +227,9 @@ fn number(src: &str, start: usize) -> Result<(Tok, usize), LexError> {
     }
     let text: String = src[start..i].chars().filter(|&c| c != '_').collect();
     if is_float {
-        let v: f64 = text.parse().map_err(|_| LexError::Syntax("invalid float literal".into()))?;
+        let v: f64 = text
+            .parse()
+            .map_err(|_| LexError::Syntax("invalid float literal".into()))?;
         return Ok((Tok::Float(v), i));
     }
     if text.len() > 1 && text.starts_with('0') && text.chars().any(|c| c != '0') {
@@ -183,26 +243,42 @@ fn number(src: &str, start: usize) -> Result<(Tok, usize), LexError> {
     }
 }
 
-/// Try to lex a string literal at `i`. Returns None if there is no string here.
+/// Try to lex a string literal at `i`, returning the token and the position
+/// after it.
+///
+/// `Ok(None)` means that no string literal starts at `i`, so the caller lexes
+/// a name instead: `i` is the start of every identifier, and identifiers such
+/// as `record` or `bar` begin with prefix letters. An invalid prefix before a
+/// quote (`ub'x'`) is also `Ok(None)`: it lexes as a name followed by a
+/// string, which the parser rejects, as Python does.
 fn try_string(src: &str, i: usize) -> Result<Option<(Tok, usize)>, LexError> {
     let b = src.as_bytes();
     // prefix: up to 2 letters among r, b, u, f
     let mut j = i;
-    while j < b.len() && j - i < 2 && matches!(b[j].to_ascii_lowercase(), b'r' | b'b' | b'u' | b'f') {
+    while j < b.len() && j - i < 2 && matches!(b[j].to_ascii_lowercase(), b'r' | b'b' | b'u' | b'f')
+    {
         j += 1;
     }
     if j >= b.len() || (b[j] != b'\'' && b[j] != b'"') {
         return Ok(None);
     }
     let prefix = src[i..j].to_ascii_lowercase();
-    let valid = matches!(prefix.as_str(), "" | "r" | "u" | "b" | "br" | "rb" | "f" | "fr" | "rf");
+    let valid = matches!(
+        prefix.as_str(),
+        "" | "r" | "u" | "b" | "br" | "rb" | "f" | "fr" | "rf"
+    );
     if !valid {
         return Ok(None);
     }
+    if prefix.contains('f') {
+        // Evaluated by the host (`Ex::Opaque`); its tokenizer reports any
+        // syntax error in the literal.
+        return Err(LexError::Unsupported("f-string".into()));
+    }
     let raw = prefix.contains('r');
     let bytes = prefix.contains('b');
-    let fstr = prefix.contains('f');
     let q = b[j];
+    debug_assert!(matches!(q, b'\'' | b'\"'), "quote is not a \' or a \".");
     let triple = j + 2 < b.len() && b[j + 1] == q && b[j + 2] == q;
     let body_start = if triple { j + 3 } else { j + 1 };
     // find the end
@@ -234,30 +310,44 @@ fn try_string(src: &str, i: usize) -> Result<Option<(Tok, usize)>, LexError> {
         }
         k += 1;
     }
-    if fstr {
-        return Err(LexError::Unsupported("f-string".into()));
-    }
     let body = &src[body_start..end];
     if bytes {
+        // `is_ascii` checks a word at a time, so a separate pass is cheaper
+        // than a per-byte check in the scan above (which all strings pay).
         if !body.is_ascii() {
-            return Err(LexError::Syntax("bytes can only contain ASCII literal characters".into()));
+            return Err(LexError::Syntax(
+                "bytes can only contain ASCII literal characters".into(),
+            ));
         }
-        let v = if raw { body.as_bytes().to_vec() } else { unescape_bytes(body)? };
+        let v = if raw {
+            body.as_bytes().to_vec()
+        } else {
+            unescape_bytes(body)?
+        };
         return Ok(Some((Tok::Bytes(v), k)));
     }
-    let s = if raw { body.to_owned() } else { unescape_str(body)? };
+    let s = if raw {
+        body.to_owned()
+    } else {
+        unescape_str(body)?
+    };
     Ok(Some((Tok::Str(s), k)))
 }
 
+#[inline]
 fn hex_val(s: &str) -> Result<u32, LexError> {
     u32::from_str_radix(s, 16).map_err(|_| LexError::Syntax("truncated escape".into()))
 }
 
 fn unescape_str(body: &str) -> Result<String, LexError> {
-    if !body.contains('\\') {
+    // Copy everything before the first backslash at once (memchr), then
+    // decode the rest char by char.
+    let Some(first) = body.find('\\') else {
         return Ok(body.to_owned());
-    }
+    };
     let mut out = String::with_capacity(body.len());
+    out.push_str(&body[..first]);
+    let body = &body[first..];
     let mut chars = body.char_indices().peekable();
     while let Some((idx, c)) = chars.next() {
         if c != '\\' {
@@ -297,15 +387,21 @@ fn unescape_str(body: &str) -> Result<String, LexError> {
                 let n = match e {
                     'x' => 2,
                     'u' => 4,
-                    _ => 8,
+                    'U' => 8,
+                    _ => unreachable!(),
                 };
                 let start = idx + 2;
-                let hex = body.get(start..start + n).ok_or_else(|| LexError::Syntax("truncated escape".into()))?;
+                let hex = body
+                    .get(start..start + n)
+                    .ok_or_else(|| LexError::Syntax("truncated escape".into()))?;
                 if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
                     return Err(LexError::Syntax("truncated escape".into()));
                 }
                 let v = hex_val(hex)?;
-                out.push(char::from_u32(v).ok_or_else(|| LexError::Syntax("illegal Unicode character".into()))?);
+                out.push(
+                    char::from_u32(v)
+                        .ok_or_else(|| LexError::Syntax("illegal Unicode character".into()))?,
+                );
                 for _ in 0..n {
                     chars.next();
                 }
@@ -356,7 +452,9 @@ fn unescape_bytes(body: &str) -> Result<Vec<u8>, LexError> {
                 out.push((v & 0xff) as u8);
             }
             b'x' => {
-                let hex = body.get(i..i + 2).ok_or_else(|| LexError::Syntax("truncated escape".into()))?;
+                let hex = body
+                    .get(i..i + 2)
+                    .ok_or_else(|| LexError::Syntax("truncated escape".into()))?;
                 out.push(hex_val(hex)? as u8);
                 i += 2;
             }
@@ -382,6 +480,53 @@ mod tests {
         assert!(matches!(tokenize("f'x'"), Err(LexError::Unsupported(_))));
         assert_eq!(tokenize("r'\\d'").unwrap()[0], Tok::Str("\\d".into()));
         assert_eq!(tokenize("'''a'b'''").unwrap()[0], Tok::Str("a'b".into()));
-        assert_eq!(tokenize("99999999999999999999").unwrap()[0], Tok::BigInt("99999999999999999999".into()));
+        assert_eq!(
+            tokenize("99999999999999999999").unwrap()[0],
+            Tok::BigInt("99999999999999999999".into())
+        );
+        assert_eq!(tokenize("'ab\\tc'").unwrap()[0], Tok::Str("ab\tc".into()));
+        assert_eq!(
+            tokenize("'é\\x41\\u00e9'").unwrap()[0],
+            Tok::Str("éAé".into())
+        );
+        assert!(matches!(tokenize("a.__class__"), Err(LexError::Dunder(n)) if n == "__class__"));
+        assert!(tokenize("'__x'").is_ok());
+        assert!(matches!(tokenize("f'x"), Err(LexError::Unsupported(_))));
+    }
+
+    /// `operator` gives the same result as a longest-match search in the
+    /// operator lists of the Python tokenizer.
+    #[test]
+    fn operators() {
+        const OPS3: [&str; 5] = ["**=", "//=", ">>=", "<<=", "..."];
+        const OPS2: [&str; 19] = [
+            "**", "//", "<<", ">>", "<=", ">=", "==", "!=", "->", ":=", "+=", "-=", "*=", "/=",
+            "%=", "&=", "|=", "^=", "@=",
+        ];
+        const OPS1: [&str; 23] = [
+            "+", "-", "*", "/", "%", "@", "&", "|", "^", "~", "<", ">", "(", ")", "[", "]", "{",
+            "}", ",", ":", ".", ";", "=",
+        ];
+        let reference = |rest: &str| {
+            OPS3.iter()
+                .chain(OPS2.iter())
+                .chain(OPS1.iter())
+                .find(|op| rest.starts_with(**op))
+                .copied()
+        };
+        let alphabet: Vec<char> = "+-*/%@&|^~<>()[]{},:.;=!a ".chars().collect();
+        let mut buf = String::new();
+        for &a in &alphabet {
+            for &b in &alphabet {
+                for &c in &alphabet {
+                    for len in 1..=3 {
+                        buf.clear();
+                        buf.extend([a, b, c].iter().take(len));
+                        assert_eq!(operator(buf.as_bytes()), reference(&buf), "{buf:?}");
+                    }
+                }
+            }
+        }
+        assert_eq!(operator(b""), None);
     }
 }

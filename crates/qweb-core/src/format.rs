@@ -2,14 +2,17 @@
 //!
 //! Equivalent to `FORMAT_REGEX = re.compile(r'(?:#\{(.+?)\})|(?:\{\{(.+?)\}\})')`.
 
-#[derive(Debug, Clone, PartialEq)]
+/// A piece of a format string.
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub enum FormatPart<'a> {
+    /// Literal text, output as is.
     Lit(&'a str),
+    /// Source of an interpolated expression (without `#{`/`{{` delimiters).
     Expr(&'a str),
 }
 
 /// Split a format string into literal and expression parts.
-pub fn split_format(s: &str) -> Vec<FormatPart<'_>> {
+pub(crate) fn split_format(s: &str) -> Vec<FormatPart<'_>> {
     let b = s.as_bytes();
     let mut parts = Vec::new();
     let mut lit_start = 0;
@@ -40,7 +43,8 @@ pub fn split_format(s: &str) -> Vec<FormatPart<'_>> {
 }
 
 /// Find the end of `.+?` followed by `}` (or `}}`), with no newline inside.
-fn find_close(b: &[u8], start: usize, double: bool) -> Option<usize> {
+#[inline]
+const fn find_close(b: &[u8], start: usize, double: bool) -> Option<usize> {
     let mut k = start + 1; // at least one char (any byte position > start is fine: '}' is ASCII)
     if start >= b.len() || b[start] == b'\n' {
         return None;
@@ -63,10 +67,16 @@ mod tests {
     use FormatPart::*;
     #[test]
     fn split() {
-        assert_eq!(split_format("a #{b} c {{d}}"), vec![Lit("a "), Expr("b"), Lit(" c "), Expr("d")]);
+        assert_eq!(
+            split_format("a #{b} c {{d}}"),
+            vec![Lit("a "), Expr("b"), Lit(" c "), Expr("d")]
+        );
         assert_eq!(split_format("#{}}"), vec![Expr("}")]);
         assert_eq!(split_format("{{a}"), vec![Lit("{{a}")]);
         assert_eq!(split_format("plain"), vec![Lit("plain")]);
-        assert_eq!(split_format("{{ {'a': 1}['a'] }}"), vec![Expr(" {'a': 1}['a'] ")]);
+        assert_eq!(
+            split_format("{{ {'a': 1}['a'] }}"),
+            vec![Expr(" {'a': 1}['a'] ")]
+        );
     }
 }

@@ -10,38 +10,56 @@ use qweb_core::xml::{Document, NodeKind, XML_NS, local_name, namespace};
 
 use crate::xpath::{Kind, Tree};
 
+/// Index of a node in a [`Dom`] arena.
 pub type DomId = usize;
 
+/// Namespace of `xmlns` attributes.
 pub const XMLNS_NS: &str = "http://www.w3.org/2000/xmlns/";
+/// XHTML namespace (`DOMParser` text/html elements, wrapper `t` elements).
 pub const XHTML_NS: &str = "http://www.w3.org/1999/xhtml";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// DOM `nodeType` of a [`DomNode`].
 pub enum DomKind {
+    /// `ELEMENT_NODE`.
     Element,
+    /// `TEXT_NODE` (also CDATA, which the parser turns into text).
     Text,
+    /// `COMMENT_NODE`.
     Comment,
+    /// `PROCESSING_INSTRUCTION_NODE`.
     Pi,
 }
 
 #[derive(Debug, Clone)]
+/// An attribute (`Attr`).
 pub struct DomAttr {
+    /// Qualified name, as written (`prefix:local`).
     pub qname: String,
+    /// Namespace URI (`null` when created by `setAttribute`).
     pub ns: Option<String>,
+    /// Attribute value.
     pub value: String,
 }
 
 #[derive(Debug, Clone)]
+/// A node of a [`Dom`] arena.
 pub struct DomNode {
+    /// Node type.
     pub kind: DomKind,
     /// Element qualified name, PI target.
     pub name: String,
+    /// Element namespace URI.
     pub ns: Option<String>,
+    /// Element attributes, in order.
     pub attrs: Vec<DomAttr>,
     /// Text, comment or PI data.
     pub data: String,
     /// Translation context of a text node (`contextByTextNode`).
     pub tctx: Option<String>,
+    /// Child nodes, in order.
     pub children: Vec<DomId>,
+    /// Parent node, `None` for a detached or document-level node.
     pub parent: Option<DomId>,
     /// The node is the document element of some `Document`.
     pub doc_child: bool,
@@ -64,14 +82,20 @@ impl DomNode {
         }
     }
 
+    /// `localName`: the qualified name without its prefix.
     pub fn local_name(&self) -> &str {
         self.name.rsplit(':').next().unwrap_or(&self.name)
     }
 
+    /// `getAttribute(qname)`.
     pub fn get(&self, qname: &str) -> Option<&str> {
-        self.attrs.iter().find(|a| a.qname == qname).map(|a| a.value.as_str())
+        self.attrs
+            .iter()
+            .find(|a| a.qname == qname)
+            .map(|a| a.value.as_str())
     }
 
+    /// `hasAttribute(qname)`.
     pub fn has(&self, qname: &str) -> bool {
         self.attrs.iter().any(|a| a.qname == qname)
     }
@@ -81,10 +105,15 @@ impl DomNode {
         let value = value.into();
         match self.attrs.iter_mut().find(|a| a.qname == qname) {
             Some(a) => a.value = value,
-            None => self.attrs.push(DomAttr { qname: qname.to_owned(), ns: None, value }),
+            None => self.attrs.push(DomAttr {
+                qname: qname.to_owned(),
+                ns: None,
+                value,
+            }),
         }
     }
 
+    /// `removeAttribute(qname)`.
     pub fn remove_attr(&mut self, qname: &str) {
         self.attrs.retain(|a| a.qname != qname);
     }
@@ -95,11 +124,15 @@ impl DomNode {
 pub struct DomError(pub String);
 
 fn hierarchy<T>() -> Result<T, DomError> {
-    Err(DomError("HierarchyRequestError: The operation would yield an incorrect node tree.".into()))
+    Err(DomError(
+        "HierarchyRequestError: The operation would yield an incorrect node tree.".into(),
+    ))
 }
 
+/// Arena holding any number of DOM trees.
 #[derive(Debug, Default, Clone)]
 pub struct Dom {
+    /// All nodes, live and free (see [`Dom::is_live`]).
     pub nodes: Vec<DomNode>,
     free: Vec<DomId>,
     /// Nodes allocated since the last [`Dom::checkpoint`].
@@ -107,15 +140,18 @@ pub struct Dom {
 }
 
 impl Dom {
+    /// An empty arena.
     pub fn new() -> Dom {
         Dom::default()
     }
 
+    /// The node `id`.
     #[inline]
     pub fn node(&self, id: DomId) -> &DomNode {
         &self.nodes[id]
     }
 
+    /// The node `id`, mutably.
     #[inline]
     pub fn node_mut(&mut self, id: DomId) -> &mut DomNode {
         &mut self.nodes[id]
@@ -142,6 +178,7 @@ impl Dom {
         }
     }
 
+    /// `createElementNS(ns, qname)`: a detached element.
     pub fn create_element(&mut self, qname: &str, ns: Option<&str>) -> DomId {
         let mut n = DomNode::new(DomKind::Element);
         n.name = qname.to_owned();
@@ -149,12 +186,14 @@ impl Dom {
         self.alloc(n)
     }
 
+    /// `createTextNode(data)`.
     pub fn create_text(&mut self, data: &str) -> DomId {
         let mut n = DomNode::new(DomKind::Text);
         n.data = data.to_owned();
         self.alloc(n)
     }
 
+    /// `createComment(data)`.
     pub fn create_comment(&mut self, data: &str) -> DomId {
         let mut n = DomNode::new(DomKind::Comment);
         n.data = data.to_owned();
@@ -187,7 +226,10 @@ impl Dom {
     pub fn release(&mut self, keep: &[DomId]) {
         let Some(log) = self.log.take() else { return };
         let keep: std::collections::HashSet<DomId> = keep.iter().copied().collect();
-        let doomed: Vec<DomId> = log.into_iter().filter(|&id| self.is_live(id) && !keep.contains(&self.top(id))).collect();
+        let doomed: Vec<DomId> = log
+            .into_iter()
+            .filter(|&id| self.is_live(id) && !keep.contains(&self.top(id)))
+            .collect();
         for &id in &doomed {
             if let Some(p) = self.nodes[id].parent
                 && !self.nodes[p].free
@@ -204,6 +246,7 @@ impl Dom {
         }
     }
 
+    /// The node exists and has not been freed.
     pub fn is_live(&self, id: DomId) -> bool {
         self.nodes.get(id).is_some_and(|n| !n.free)
     }
@@ -217,9 +260,14 @@ impl Dom {
         Ok(root)
     }
 
-    fn import_lxml(&mut self, doc: &Document, id: usize, parent_ns: Option<&qweb_core::xml::NsMap>) -> DomId {
+    fn import_lxml(
+        &mut self,
+        doc: &Document,
+        id: usize,
+        parent_ns: Option<&qweb_core::xml::NsMap>,
+    ) -> DomId {
         let src = doc.node(id);
-        let new = match src.kind {
+        match src.kind {
             NodeKind::Comment => self.create_comment(src.text.as_deref().unwrap_or("")),
             NodeKind::Pi => {
                 let mut n = DomNode::new(DomKind::Pi);
@@ -238,13 +286,18 @@ impl Dom {
                 n.name = qname;
                 n.ns = ns;
                 for (prefix, uri) in src.nsmap.iter() {
-                    let inherited = parent_ns.is_some_and(|p| p.iter().any(|(q, u)| q == prefix && u == uri));
+                    let inherited =
+                        parent_ns.is_some_and(|p| p.iter().any(|(q, u)| q == prefix && u == uri));
                     if !inherited {
                         let qname = match prefix {
                             Some(p) => format!("xmlns:{p}"),
                             None => "xmlns".to_owned(),
                         };
-                        n.attrs.push(DomAttr { qname, ns: Some(XMLNS_NS.into()), value: uri.clone() });
+                        n.attrs.push(DomAttr {
+                            qname,
+                            ns: Some(XMLNS_NS.into()),
+                            value: uri.clone(),
+                        });
                     }
                 }
                 for (k, v) in &src.attrs {
@@ -252,13 +305,19 @@ impl Dom {
                     let local = local_name(k);
                     let qname = match ans {
                         Some(XML_NS) => format!("xml:{local}"),
-                        Some(uri) => match src.nsmap.iter().find(|(q, u)| q.is_some() && u == uri) {
-                            Some((Some(p), _)) => format!("{p}:{local}"),
-                            _ => local.to_owned(),
-                        },
+                        Some(uri) => {
+                            match src.nsmap.iter().find(|(q, u)| q.is_some() && u == uri) {
+                                Some((Some(p), _)) => format!("{p}:{local}"),
+                                _ => local.to_owned(),
+                            }
+                        }
                         None => local.to_owned(),
                     };
-                    n.attrs.push(DomAttr { qname, ns: ans.map(str::to_owned), value: v.clone() });
+                    n.attrs.push(DomAttr {
+                        qname,
+                        ns: ans.map(str::to_owned),
+                        value: v.clone(),
+                    });
                 }
                 let el = self.alloc(n);
                 if let Some(t) = &src.text {
@@ -275,8 +334,7 @@ impl Dom {
                 }
                 el
             }
-        };
-        new
+        }
     }
 
     fn append_raw(&mut self, parent: DomId, child: DomId) {
@@ -298,17 +356,20 @@ impl Dom {
         new
     }
 
+    /// Position of `id` among its parent's children.
     pub fn index_in_parent(&self, id: DomId) -> Option<usize> {
         let p = self.nodes[id].parent?;
         self.nodes[p].children.iter().position(|&c| c == id)
     }
 
+    /// `previousSibling`.
     pub fn previous_sibling(&self, id: DomId) -> Option<DomId> {
         let p = self.nodes[id].parent?;
         let i = self.index_in_parent(id)?;
         i.checked_sub(1).map(|i| self.nodes[p].children[i])
     }
 
+    /// `nextSibling`.
     pub fn next_sibling(&self, id: DomId) -> Option<DomId> {
         let p = self.nodes[id].parent?;
         let i = self.index_in_parent(id)?;
@@ -336,7 +397,12 @@ impl Dom {
     }
 
     /// Insert `nodes` (moved) into `parent` before `reference` (or at the end).
-    fn insert_nodes(&mut self, parent: DomId, nodes: &[DomId], reference: Option<DomId>) -> Result<(), DomError> {
+    fn insert_nodes(
+        &mut self,
+        parent: DomId,
+        nodes: &[DomId],
+        reference: Option<DomId>,
+    ) -> Result<(), DomError> {
         for &n in nodes {
             if self.is_inclusive_ancestor(n, parent) {
                 return hierarchy();
@@ -345,14 +411,17 @@ impl Dom {
         for &n in nodes {
             self.detach(n);
         }
-        let mut idx = match reference {
-            Some(r) => self.index_in_parent(r).unwrap_or(self.nodes[parent].children.len()),
+        let idx = match reference {
+            Some(r) => self
+                .index_in_parent(r)
+                .unwrap_or(self.nodes[parent].children.len()),
             None => self.nodes[parent].children.len(),
         };
+        self.nodes[parent]
+            .children
+            .splice(idx..idx, nodes.iter().copied());
         for &n in nodes {
-            self.nodes[parent].children.insert(idx, n);
             self.nodes[n].parent = Some(parent);
-            idx += 1;
         }
         Ok(())
     }
@@ -360,7 +429,10 @@ impl Dom {
     /// Siblings of a document element: only comments and PIs are allowed
     /// (and they leave the element tree).
     fn doc_level(&mut self, nodes: &[DomId]) -> Result<(), DomError> {
-        if nodes.iter().any(|&n| matches!(self.nodes[n].kind, DomKind::Element | DomKind::Text)) {
+        if nodes
+            .iter()
+            .any(|&n| matches!(self.nodes[n].kind, DomKind::Element | DomKind::Text))
+        {
             return hierarchy();
         }
         for &n in nodes {
@@ -372,10 +444,18 @@ impl Dom {
     /// `target.before(...nodes)`.
     pub fn before(&mut self, target: DomId, nodes: &[DomId]) -> Result<(), DomError> {
         let Some(parent) = self.nodes[target].parent else {
-            return if self.nodes[target].doc_child { self.doc_level(nodes) } else { Ok(()) };
+            return if self.nodes[target].doc_child {
+                self.doc_level(nodes)
+            } else {
+                Ok(())
+            };
         };
         let i = self.index_in_parent(target).unwrap();
-        let viable_prev = self.nodes[parent].children[..i].iter().rev().copied().find(|c| !nodes.contains(c));
+        let viable_prev = self.nodes[parent].children[..i]
+            .iter()
+            .rev()
+            .copied()
+            .find(|c| !nodes.contains(c));
         for &n in nodes {
             if self.is_inclusive_ancestor(n, parent) {
                 return hierarchy();
@@ -394,10 +474,17 @@ impl Dom {
     /// `target.after(...nodes)`.
     pub fn after(&mut self, target: DomId, nodes: &[DomId]) -> Result<(), DomError> {
         let Some(parent) = self.nodes[target].parent else {
-            return if self.nodes[target].doc_child { self.doc_level(nodes) } else { Ok(()) };
+            return if self.nodes[target].doc_child {
+                self.doc_level(nodes)
+            } else {
+                Ok(())
+            };
         };
         let i = self.index_in_parent(target).unwrap();
-        let viable_next = self.nodes[parent].children[i + 1..].iter().copied().find(|c| !nodes.contains(c));
+        let viable_next = self.nodes[parent].children[i + 1..]
+            .iter()
+            .copied()
+            .find(|c| !nodes.contains(c));
         self.insert_nodes(parent, nodes, viable_next)
     }
 
@@ -411,7 +498,10 @@ impl Dom {
             return Ok(());
         };
         let i = self.index_in_parent(target).unwrap();
-        let viable_next = self.nodes[parent].children[i + 1..].iter().copied().find(|c| !nodes.contains(c));
+        let viable_next = self.nodes[parent].children[i + 1..]
+            .iter()
+            .copied()
+            .find(|c| !nodes.contains(c));
         for &n in nodes {
             if self.is_inclusive_ancestor(n, parent) {
                 return hierarchy();
@@ -437,7 +527,11 @@ impl Dom {
 
     /// `parent.prepend(...nodes)`.
     pub fn prepend(&mut self, parent: DomId, nodes: &[DomId]) -> Result<(), DomError> {
-        let first = self.nodes[parent].children.first().copied().filter(|f| !nodes.contains(f));
+        let first = self.nodes[parent]
+            .children
+            .first()
+            .copied()
+            .filter(|f| !nodes.contains(f));
         self.insert_nodes(parent, nodes, first)
     }
 
@@ -559,19 +653,25 @@ impl Dom {
     }
 }
 
+/// `XMLSerializer` escaping of text (`attr`: of an attribute value).
 fn escape(s: &str, out: &mut String, attr: bool) {
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' if attr => out.push_str("&quot;"),
-            '\t' if attr => out.push_str("&#9;"),
-            '\n' if attr => out.push_str("&#10;"),
-            '\r' if attr => out.push_str("&#13;"),
-            c => out.push(c),
-        }
+    let mut start = 0;
+    for (i, b) in s.bytes().enumerate() {
+        let rep = match b {
+            b'&' => "&amp;",
+            b'<' => "&lt;",
+            b'>' => "&gt;",
+            b'"' if attr => "&quot;",
+            b'\t' if attr => "&#9;",
+            b'\n' if attr => "&#10;",
+            b'\r' if attr => "&#13;",
+            _ => continue,
+        };
+        out.push_str(&s[start..i]);
+        out.push_str(rep);
+        start = i + 1;
     }
+    out.push_str(&s[start..]);
 }
 
 fn json_opt(s: Option<&str>, out: &mut String) {
@@ -584,28 +684,41 @@ fn json_opt(s: Option<&str>, out: &mut String) {
 /// `JSON.stringify(string)`.
 pub fn json_str(s: &str, out: &mut String) {
     out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\x08' => out.push_str("\\b"),
-            '\x0c' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
+    let mut start = 0;
+    for (i, b) in s.bytes().enumerate() {
+        let rep = match b {
+            b'"' => "\\\"",
+            b'\\' => "\\\\",
+            b'\n' => "\\n",
+            b'\r' => "\\r",
+            b'\t' => "\\t",
+            0x08 => "\\b",
+            0x0c => "\\f",
+            0..0x20 => {
+                out.push_str(&s[start..i]);
+                out.push_str(&format!("\\u{b:04x}"));
+                start = i + 1;
+                continue;
+            }
+            _ => continue,
+        };
+        out.push_str(&s[start..i]);
+        out.push_str(rep);
+        start = i + 1;
     }
+    out.push_str(&s[start..]);
     out.push('"');
 }
 
 /// XPath view of a [`Dom`] tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// A node of the XPath data model over a [`Dom`].
 pub enum DNode {
     /// Document node above a top-level node.
     Doc(DomId),
+    /// Element, text, comment or processing instruction.
     Node(DomId),
+    /// Attribute `index` of an element.
     Attr(DomId, u32),
 }
 
@@ -664,7 +777,10 @@ impl Tree for Dom {
             }
             DNode::Attr(id, i) => {
                 let a = &self.nodes[id].attrs[i as usize];
-                (a.ns.as_deref(), a.qname.rsplit(':').next().unwrap_or(&a.qname))
+                (
+                    a.ns.as_deref(),
+                    a.qname.rsplit(':').next().unwrap_or(&a.qname),
+                )
             }
             DNode::Doc(_) => (None, ""),
         }

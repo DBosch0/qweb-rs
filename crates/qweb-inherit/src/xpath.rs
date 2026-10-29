@@ -25,6 +25,7 @@ pub enum XNode {
     Attr(NodeId, u32),
 }
 
+/// Invalid XPath expression or evaluation error.
 #[derive(Debug, Clone, PartialEq)]
 pub struct XPathError(pub String);
 
@@ -190,7 +191,9 @@ fn lex(src: &str) -> Res<Vec<Tok>> {
             }
             b'"' | b'\'' => {
                 let end = src[i + 1..].find(c as char).map(|e| i + 1 + e);
-                let Some(end) = end else { return err("unterminated string literal") };
+                let Some(end) = end else {
+                    return err("unterminated string literal");
+                };
                 out.push(Tok::Lit(src[i + 1..end].to_owned()));
                 i = end + 1;
             }
@@ -225,7 +228,9 @@ fn lex(src: &str) -> Res<Vec<Tok>> {
             }
             b'{' => {
                 // Clark notation (lxml ETXPath)
-                let Some(close) = src[i..].find('}') else { return err("unterminated namespace URI") };
+                let Some(close) = src[i..].find('}') else {
+                    return err("unterminated namespace URI");
+                };
                 let mut j = i + close + 1;
                 if b.get(j) == Some(&b'*') {
                     j += 1;
@@ -267,7 +272,12 @@ fn lex(src: &str) -> Res<Vec<Tok>> {
                     out.push(Tok::Name(name.to_owned()));
                 }
             }
-            _ => return err(format!("unexpected character {:?}", &src[i..i + next_len(src, i)])),
+            _ => {
+                return err(format!(
+                    "unexpected character {:?}",
+                    &src[i..i + next_len(src, i)]
+                ));
+            }
         }
     }
     Ok(out)
@@ -278,7 +288,10 @@ fn next_len(s: &str, i: usize) -> usize {
 }
 
 fn is_name_start(s: &str, i: usize) -> bool {
-    s[i..].chars().next().is_some_and(|c| c == '_' || c.is_alphabetic())
+    s[i..]
+        .chars()
+        .next()
+        .is_some_and(|c| c == '_' || c.is_alphabetic())
 }
 
 fn is_name_char(s: &str, i: usize) -> bool {
@@ -304,12 +317,15 @@ enum Axis {
     Parent,
     Preceding,
     PrecedingSibling,
-    SelfAxis,
+    Self_,
 }
 
 impl Axis {
     fn reverse(self) -> bool {
-        matches!(self, Axis::Ancestor | Axis::AncestorOrSelf | Axis::Preceding | Axis::PrecedingSibling)
+        matches!(
+            self,
+            Axis::Ancestor | Axis::AncestorOrSelf | Axis::Preceding | Axis::PrecedingSibling
+        )
     }
 }
 
@@ -357,9 +373,16 @@ enum Expr {
     Neg(Box<Expr>),
     Union(Box<Expr>, Box<Expr>),
     /// Location path; `absolute` starts at the document node.
-    Path { absolute: bool, steps: Vec<Step> },
+    Path {
+        absolute: bool,
+        steps: Vec<Step>,
+    },
     /// Filter expression followed by an optional relative path.
-    Filter { primary: Box<Expr>, preds: Vec<Expr>, steps: Vec<Step> },
+    Filter {
+        primary: Box<Expr>,
+        preds: Vec<Expr>,
+        steps: Vec<Step>,
+    },
     Lit(String),
     Num(f64),
     Call(String, Vec<Expr>),
@@ -391,7 +414,11 @@ impl Parser {
     }
 
     fn expect(&mut self, t: &Tok) -> Res<()> {
-        if self.eat(t) { Ok(()) } else { err(format!("expected {t:?}, found {:?}", self.peek())) }
+        if self.eat(t) {
+            Ok(())
+        } else {
+            err(format!("expected {t:?}, found {:?}", self.peek()))
+        }
     }
 
     fn expr(&mut self) -> Res<Expr> {
@@ -496,7 +523,10 @@ impl Parser {
             Some(Tok::Lit(_) | Tok::Num(_) | Tok::LParen | Tok::Var(_)) => true,
             Some(Tok::Name(n)) => {
                 self.peek_at(1) == Some(&Tok::LParen)
-                    && !matches!(n.as_str(), "node" | "text" | "comment" | "processing-instruction")
+                    && !matches!(
+                        n.as_str(),
+                        "node" | "text" | "comment" | "processing-instruction"
+                    )
             }
             _ => false,
         }
@@ -516,7 +546,11 @@ impl Parser {
             if preds.is_empty() && steps.is_empty() {
                 return Ok(primary);
             }
-            return Ok(Expr::Filter { primary: Box::new(primary), preds, steps });
+            return Ok(Expr::Filter {
+                primary: Box::new(primary),
+                preds,
+                steps,
+            });
         }
         let mut steps = Vec::new();
         match self.peek() {
@@ -525,21 +559,33 @@ impl Parser {
                 if self.is_step_start() {
                     self.rel_steps(&mut steps, false)?;
                 }
-                Ok(Expr::Path { absolute: true, steps })
+                Ok(Expr::Path {
+                    absolute: true,
+                    steps,
+                })
             }
             Some(Tok::DSlash) => {
                 self.rel_steps(&mut steps, true)?;
-                Ok(Expr::Path { absolute: true, steps })
+                Ok(Expr::Path {
+                    absolute: true,
+                    steps,
+                })
             }
             _ => {
                 self.rel_steps(&mut steps, false)?;
-                Ok(Expr::Path { absolute: false, steps })
+                Ok(Expr::Path {
+                    absolute: false,
+                    steps,
+                })
             }
         }
     }
 
     fn is_step_start(&self) -> bool {
-        matches!(self.peek(), Some(Tok::Name(_) | Tok::At | Tok::Dot | Tok::DDot))
+        matches!(
+            self.peek(),
+            Some(Tok::Name(_) | Tok::At | Tok::Dot | Tok::DDot)
+        )
     }
 
     /// Steps of a relative path; `leading_sep` means a `/` or `//` comes first.
@@ -554,7 +600,24 @@ impl Parser {
                 }
                 Some(Tok::DSlash) => {
                     self.pos += 1;
-                    steps.push(Step { axis: Axis::DescendantOrSelf, test: NodeTest::Node, preds: Vec::new() });
+                    let next = self.step()?;
+                    if next.axis == Axis::Child && !next.preds.iter().any(positional) {
+                        // `//x[p]` is `descendant::x[p]` when `p` does not
+                        // depend on the position: one pass, already in
+                        // document order.
+                        steps.push(Step {
+                            axis: Axis::Descendant,
+                            ..next
+                        });
+                    } else {
+                        steps.push(Step {
+                            axis: Axis::DescendantOrSelf,
+                            test: NodeTest::Node,
+                            preds: Vec::new(),
+                        });
+                        steps.push(next);
+                    }
+                    continue;
                 }
                 _ => return Ok(()),
             }
@@ -564,10 +627,18 @@ impl Parser {
 
     fn step(&mut self) -> Res<Step> {
         if self.eat(&Tok::Dot) {
-            return Ok(Step { axis: Axis::SelfAxis, test: NodeTest::Node, preds: Vec::new() });
+            return Ok(Step {
+                axis: Axis::Self_,
+                test: NodeTest::Node,
+                preds: Vec::new(),
+            });
         }
         if self.eat(&Tok::DDot) {
-            return Ok(Step { axis: Axis::Parent, test: NodeTest::Node, preds: Vec::new() });
+            return Ok(Step {
+                axis: Axis::Parent,
+                test: NodeTest::Node,
+                preds: Vec::new(),
+            });
         }
         let mut axis = Axis::Child;
         if self.eat(&Tok::At) {
@@ -586,7 +657,7 @@ impl Parser {
                 "parent" => Axis::Parent,
                 "preceding" => Axis::Preceding,
                 "preceding-sibling" => Axis::PrecedingSibling,
-                "self" => Axis::SelfAxis,
+                "self" => Axis::Self_,
                 _ => return err(format!("unknown axis {n:?}")),
             };
             self.pos += 2;
@@ -679,6 +750,55 @@ impl Parser {
     }
 }
 
+/// Whether a predicate may depend on the context position or size: it may
+/// evaluate to a number (`[1]`, `[count(x)]`), or it calls `position()` or
+/// `last()` for its own context. Conservative: unknown functions count.
+fn positional(e: &Expr) -> bool {
+    returns_number(e) || uses_position(e)
+}
+
+fn returns_number(e: &Expr) -> bool {
+    match e {
+        Expr::Num(_) | Expr::Neg(_) => true,
+        Expr::Bin(op, ..) => matches!(op, Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod),
+        Expr::Lit(_) | Expr::Path { .. } | Expr::Filter { .. } | Expr::Union(..) => false,
+        Expr::Call(name, _) => !matches!(
+            name.as_str(),
+            "string"
+                | "concat"
+                | "starts-with"
+                | "contains"
+                | "substring-before"
+                | "substring-after"
+                | "substring"
+                | "normalize-space"
+                | "translate"
+                | "local-name"
+                | "name"
+                | "namespace-uri"
+                | "boolean"
+                | "not"
+                | "true"
+                | "false"
+                | "hasclass"
+        ),
+    }
+}
+
+/// Whether `e` calls `position()` or `last()` in the current context
+/// (predicates of nested steps have their own context).
+fn uses_position(e: &Expr) -> bool {
+    match e {
+        Expr::Call(name, args) => {
+            matches!(name.as_str(), "position" | "last") || args.iter().any(uses_position)
+        }
+        Expr::Bin(_, a, b) | Expr::Union(a, b) => uses_position(a) || uses_position(b),
+        Expr::Neg(a) => uses_position(a),
+        Expr::Filter { primary, .. } => uses_position(primary),
+        Expr::Path { .. } | Expr::Lit(_) | Expr::Num(_) => false,
+    }
+}
+
 /// A compiled XPath expression.
 #[derive(Debug, Clone)]
 pub struct XPath {
@@ -697,6 +817,7 @@ pub enum Dialect {
 }
 
 impl XPath {
+    /// Parse an XPath 1.0 expression.
     pub fn parse(src: &str) -> Res<XPath> {
         let toks = lex(src)?;
         if toks.is_empty() {
@@ -712,8 +833,19 @@ impl XPath {
 
     /// Evaluate on any [`Tree`]; returns the node-set in document order.
     pub fn select_in<T: Tree>(&self, tree: &T, context: T::N, dialect: Dialect) -> Res<Vec<T::N>> {
-        let mut ev = Eval { t: tree, order: None, dialect };
-        match ev.eval(&self.expr, &Ctx { node: context, pos: 1, size: 1 })? {
+        let mut ev = Eval {
+            t: tree,
+            order: None,
+            dialect,
+        };
+        match ev.eval(
+            &self.expr,
+            &Ctx {
+                node: context,
+                pos: 1,
+                size: 1,
+            },
+        )? {
             Val::Nodes(n) => Ok(n),
             _ => err("expression does not evaluate to a node-set"),
         }
@@ -723,7 +855,9 @@ impl XPath {
     /// node-set in document order, without the document node (like lxml).
     pub fn select(&self, doc: &Document, context: NodeId) -> Res<Vec<XNode>> {
         let n = self.select_in(&LxmlTree(doc), XNode::Node(context), Dialect::Lxml)?;
-        Ok(n.into_iter().filter(|n| !matches!(n, XNode::Root(_))).collect())
+        Ok(n.into_iter()
+            .filter(|n| !matches!(n, XNode::Root(_)))
+            .collect())
     }
 
     /// First element of the node-set (lxml `xpath(...)[0]`), `None` if empty.
@@ -740,19 +874,29 @@ impl XPath {
 // ---------------------------------------------------------------- tree model
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// XPath node type.
 pub enum Kind {
+    /// Document node.
     Root,
+    /// Element.
     Element,
+    /// Text node.
     Text,
+    /// Comment.
     Comment,
+    /// Processing instruction.
     Pi,
+    /// Attribute.
     Attr,
 }
 
 /// The XPath data model over some tree representation.
 pub trait Tree {
+    /// Node handle.
     type N: Copy + Eq + Hash + std::fmt::Debug;
+    /// Node type of `n`.
     fn kind(&self, n: Self::N) -> Kind;
+    /// Parent of `n` (the owner element for an attribute).
     fn parent(&self, n: Self::N) -> Option<Self::N>;
     /// Children (document and element nodes only).
     fn children(&self, n: Self::N, out: &mut Vec<Self::N>);
@@ -932,7 +1076,12 @@ impl<'a, T: Tree> Eval<'a, T> {
             }
             self.order = Some(map);
         }
-        self.order.as_ref().unwrap().get(&n).copied().unwrap_or(u32::MAX)
+        self.order
+            .as_ref()
+            .unwrap()
+            .get(&n)
+            .copied()
+            .unwrap_or(u32::MAX)
     }
 
     fn sort_dedup(&mut self, mut nodes: Vec<T::N>) -> Vec<T::N> {
@@ -945,12 +1094,16 @@ impl<'a, T: Tree> Eval<'a, T> {
         keyed.into_iter().map(|(_, n)| n).collect()
     }
 
+    /// Descendants of `n` in document order (pre-order).
     fn descendants(&self, n: T::N, out: &mut Vec<T::N>) {
+        let mut stack = Vec::new();
         let mut kids = Vec::new();
         self.t.children(n, &mut kids);
-        for k in kids {
-            out.push(k);
-            self.descendants(k, out);
+        stack.extend(kids.drain(..).rev());
+        while let Some(x) = stack.pop() {
+            out.push(x);
+            self.t.children(x, &mut kids);
+            stack.extend(kids.drain(..).rev());
         }
     }
 
@@ -959,11 +1112,19 @@ impl<'a, T: Tree> Eval<'a, T> {
         if matches!(self.t.kind(n), Kind::Attr | Kind::Root) {
             return Vec::new();
         }
-        let Some(parent) = self.t.parent(n) else { return Vec::new() };
+        let Some(parent) = self.t.parent(n) else {
+            return Vec::new();
+        };
         let mut all = Vec::new();
         self.t.children(parent, &mut all);
-        let Some(pos) = all.iter().position(|&x| x == n) else { return Vec::new() };
-        if forward { all[pos + 1..].to_vec() } else { all[..pos].iter().rev().copied().collect() }
+        let Some(pos) = all.iter().position(|&x| x == n) else {
+            return Vec::new();
+        };
+        if forward {
+            all[pos + 1..].to_vec()
+        } else {
+            all[..pos].iter().rev().copied().collect()
+        }
     }
 
     fn axis(&self, axis: Axis, n: T::N) -> Res<Vec<T::N>> {
@@ -975,7 +1136,7 @@ impl<'a, T: Tree> Eval<'a, T> {
                 out.push(n);
                 self.descendants(n, &mut out);
             }
-            Axis::SelfAxis => out.push(n),
+            Axis::Self_ => out.push(n),
             Axis::Parent => out.extend(self.t.parent(n)),
             Axis::Ancestor | Axis::AncestorOrSelf => {
                 if axis == Axis::AncestorOrSelf {
@@ -1006,7 +1167,11 @@ impl<'a, T: Tree> Eval<'a, T> {
             }
             Axis::Preceding => {
                 // reverse document order, excluding ancestors
-                let mut cur = Some(if self.t.kind(n) == Kind::Attr { self.t.parent(n).unwrap() } else { n });
+                let mut cur = Some(if self.t.kind(n) == Kind::Attr {
+                    self.t.parent(n).unwrap()
+                } else {
+                    n
+                });
                 while let Some(c) = cur {
                     for s in self.siblings(c, false) {
                         let mut sub = Vec::new();
@@ -1029,9 +1194,15 @@ impl<'a, T: Tree> Eval<'a, T> {
             NodeTest::Node => true,
             NodeTest::Text => kind == Kind::Text,
             NodeTest::Comment => kind == Kind::Comment,
-            NodeTest::Pi(target) => kind == Kind::Pi && target.as_ref().is_none_or(|t| t == self.t.pi_target(n)),
+            NodeTest::Pi(target) => {
+                kind == Kind::Pi && target.as_ref().is_none_or(|t| t == self.t.pi_target(n))
+            }
             NodeTest::Any | NodeTest::AnyIn(_) | NodeTest::Name(..) => {
-                let principal = if axis == Axis::Attribute { Kind::Attr } else { Kind::Element };
+                let principal = if axis == Axis::Attribute {
+                    Kind::Attr
+                } else {
+                    Kind::Element
+                };
                 if kind != principal {
                     return false;
                 }
@@ -1057,15 +1228,22 @@ impl<'a, T: Tree> Eval<'a, T> {
         }
     }
 
+    /// Append the text descendants of `n`, in document order.
     fn collect_text(&self, n: T::N, s: &mut String) {
-        let mut kids = Vec::new();
-        self.t.children(n, &mut kids);
-        for k in kids {
-            match self.t.kind(k) {
-                Kind::Text => s.push_str(self.t.value(k)),
-                Kind::Element => self.collect_text(k, s),
-                _ => {}
+        let mut desc = Vec::new();
+        self.descendants(n, &mut desc);
+        for k in desc {
+            if self.t.kind(k) == Kind::Text {
+                s.push_str(self.t.value(k));
             }
+        }
+    }
+
+    /// `f(string-value(n))`, without allocating for attribute and text nodes.
+    fn with_string_value<R>(&self, n: T::N, f: impl FnOnce(&str) -> R) -> R {
+        match self.t.kind(n) {
+            Kind::Root | Kind::Element => f(&self.string_value(n)),
+            _ => f(self.t.value(n)),
         }
     }
 
@@ -1073,8 +1251,8 @@ impl<'a, T: Tree> Eval<'a, T> {
         let multi = input.len() > 1;
         let mut out = Vec::new();
         for n in input {
-            let mut nodes: Vec<T::N> =
-                self.axis(step.axis, n)?.into_iter().filter(|&x| self.matches(step.axis, &step.test, x)).collect();
+            let mut nodes = self.axis(step.axis, n)?;
+            nodes.retain(|&x| self.matches(step.axis, &step.test, x));
             for pred in &step.preds {
                 nodes = self.filter(nodes, pred)?;
             }
@@ -1094,7 +1272,11 @@ impl<'a, T: Tree> Eval<'a, T> {
         let size = nodes.len();
         let mut out = Vec::new();
         for (i, n) in nodes.into_iter().enumerate() {
-            let ctx = Ctx { node: n, pos: i + 1, size };
+            let ctx = Ctx {
+                node: n,
+                pos: i + 1,
+                size,
+            };
             let keep = match self.eval(pred, &ctx)? {
                 Val::Num(x) => x == (i + 1) as f64,
                 v => self.boolean(&v),
@@ -1122,10 +1304,18 @@ impl<'a, T: Tree> Eval<'a, T> {
                 Val::Num(-self.number(&v))
             }
             Expr::Path { absolute, steps } => {
-                let start = if *absolute { self.t.document(ctx.node) } else { ctx.node };
+                let start = if *absolute {
+                    self.t.document(ctx.node)
+                } else {
+                    ctx.node
+                };
                 Val::Nodes(self.steps(vec![start], steps)?)
             }
-            Expr::Filter { primary, preds, steps } => {
+            Expr::Filter {
+                primary,
+                preds,
+                steps,
+            } => {
                 let Val::Nodes(mut nodes) = self.eval(primary, ctx)? else {
                     return err("predicate or path applied to a non node-set");
                 };
@@ -1135,7 +1325,8 @@ impl<'a, T: Tree> Eval<'a, T> {
                 Val::Nodes(self.steps(nodes, steps)?)
             }
             Expr::Union(a, b) => {
-                let (Val::Nodes(mut x), Val::Nodes(y)) = (self.eval(a, ctx)?, self.eval(b, ctx)?) else {
+                let (Val::Nodes(mut x), Val::Nodes(y)) = (self.eval(a, ctx)?, self.eval(b, ctx)?)
+                else {
                     return err("union of non node-sets");
                 };
                 x.extend(y);
@@ -1143,17 +1334,33 @@ impl<'a, T: Tree> Eval<'a, T> {
             }
             Expr::Bin(Op::Or, a, b) => {
                 let l = self.eval(a, ctx)?;
-                Val::Bool(self.boolean(&l) || {
-                    let r = self.eval(b, ctx)?;
-                    self.boolean(&r)
-                })
+                Val::Bool(
+                    self.boolean(&l) || {
+                        let r = self.eval(b, ctx)?;
+                        self.boolean(&r)
+                    },
+                )
             }
             Expr::Bin(Op::And, a, b) => {
                 let l = self.eval(a, ctx)?;
-                Val::Bool(self.boolean(&l) && {
-                    let r = self.eval(b, ctx)?;
-                    self.boolean(&r)
-                })
+                Val::Bool(
+                    self.boolean(&l) && {
+                        let r = self.eval(b, ctx)?;
+                        self.boolean(&r)
+                    },
+                )
+            }
+            Expr::Bin(op @ (Op::Eq | Op::Neq | Op::Lt | Op::Le | Op::Gt | Op::Ge), a, b)
+                if matches!(**b, Expr::Lit(_)) || matches!(**a, Expr::Lit(_)) =>
+            {
+                // `@x = 'lit'` (the usual predicate): compare without copies.
+                let (lit, other, swapped) = match (&**a, &**b) {
+                    (_, Expr::Lit(s)) => (s, a, false),
+                    (Expr::Lit(s), _) => (s, b, true),
+                    _ => unreachable!(),
+                };
+                let v = self.eval(other, ctx)?;
+                Val::Bool(self.compare_lit(*op, &v, lit, swapped))
             }
             Expr::Bin(op @ (Op::Eq | Op::Neq | Op::Lt | Op::Le | Op::Gt | Op::Ge), a, b) => {
                 let l = self.eval(a, ctx)?;
@@ -1184,7 +1391,13 @@ impl<'a, T: Tree> Eval<'a, T> {
                 let bs: Vec<String> = b.iter().map(|&n| self.string_value(n)).collect();
                 a.iter().any(|&n| {
                     let s = self.string_value(n);
-                    bs.iter().any(|t| if eqop { cmp_eq(op, s == *t) } else { cmp_num(op, str_to_num(&s), str_to_num(t)) })
+                    bs.iter().any(|t| {
+                        if eqop {
+                            cmp_eq(op, s == *t)
+                        } else {
+                            cmp_num(op, str_to_num(&s), str_to_num(t))
+                        }
+                    })
                 })
             }
             (Val::Nodes(a), other) | (other, Val::Nodes(a)) => {
@@ -1192,7 +1405,11 @@ impl<'a, T: Tree> Eval<'a, T> {
                 if let Val::Bool(b) = other {
                     let nb = Val::Bool(!a.is_empty());
                     let b = Val::Bool(*b);
-                    return if swapped { self.compare(op, &b, &nb) } else { self.compare(op, &nb, &b) };
+                    return if swapped {
+                        self.compare(op, &b, &nb)
+                    } else {
+                        self.compare(op, &nb, &b)
+                    };
                 }
                 a.iter().any(|&n| {
                     let s = self.string_value(n);
@@ -1200,7 +1417,11 @@ impl<'a, T: Tree> Eval<'a, T> {
                         Val::Num(_) => Val::Num(str_to_num(&s)),
                         _ => Val::Str(s),
                     };
-                    if swapped { self.compare(op, other, &nv) } else { self.compare(op, &nv, other) }
+                    if swapped {
+                        self.compare(op, other, &nv)
+                    } else {
+                        self.compare(op, &nv, other)
+                    }
                 })
             }
             _ if eqop => {
@@ -1213,6 +1434,33 @@ impl<'a, T: Tree> Eval<'a, T> {
             }
             _ => cmp_num(op, self.number(l), self.number(r)),
         }
+    }
+
+    /// `v op lit` (or `lit op v` when `swapped`), like [`Eval::compare`] with
+    /// a string operand.
+    fn compare_lit(&self, op: Op, v: &Val<T::N>, lit: &str, swapped: bool) -> bool {
+        let Val::Nodes(nodes) = v else {
+            let lit = Val::Str(lit.to_owned());
+            return if swapped {
+                self.compare(op, &lit, v)
+            } else {
+                self.compare(op, v, &lit)
+            };
+        };
+        if matches!(op, Op::Eq | Op::Neq) {
+            return nodes
+                .iter()
+                .any(|&n| self.with_string_value(n, |s| cmp_eq(op, s == lit)));
+        }
+        let y = str_to_num(lit);
+        nodes.iter().any(|&n| {
+            let x = self.with_string_value(n, str_to_num);
+            if swapped {
+                cmp_num(op, y, x)
+            } else {
+                cmp_num(op, x, y)
+            }
+        })
     }
 
     fn boolean(&self, v: &Val<T::N>) -> bool {
@@ -1283,7 +1531,8 @@ impl<'a, T: Tree> Eval<'a, T> {
                     Some(_) => return err(format!("{name}() expects a node-set")),
                     None => Some(ctx.node),
                 };
-                let n = n.filter(|&n| matches!(self.t.kind(n), Kind::Element | Kind::Attr | Kind::Pi));
+                let n =
+                    n.filter(|&n| matches!(self.t.kind(n), Kind::Element | Kind::Attr | Kind::Pi));
                 Val::Str(match n {
                     None => String::new(),
                     Some(n) if self.t.kind(n) == Kind::Pi => self.t.pi_target(n).to_owned(),
@@ -1320,7 +1569,11 @@ impl<'a, T: Tree> Eval<'a, T> {
             "substring-after" => {
                 argc(2, 2)?;
                 let (s, t) = (self.string(&vals[0]), self.string(&vals[1]));
-                Val::Str(s.find(&t).map(|i| s[i + t.len()..].to_owned()).unwrap_or_default())
+                Val::Str(
+                    s.find(&t)
+                        .map(|i| s[i + t.len()..].to_owned())
+                        .unwrap_or_default(),
+                )
             }
             "substring" => {
                 argc(2, 3)?;
@@ -1348,7 +1601,11 @@ impl<'a, T: Tree> Eval<'a, T> {
             "normalize-space" => {
                 argc(0, 1)?;
                 Val::Str(
-                    str_arg(self, 0).split([' ', '\t', '\n', '\r']).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" "),
+                    str_arg(self, 0)
+                        .split([' ', '\t', '\n', '\r'])
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" "),
                 )
             }
             "translate" => {
@@ -1391,7 +1648,9 @@ impl<'a, T: Tree> Eval<'a, T> {
             "sum" => {
                 argc(1, 1)?;
                 match &vals[0] {
-                    Val::Nodes(n) => Val::Num(n.iter().map(|&x| str_to_num(&self.string_value(x))).sum()),
+                    Val::Nodes(n) => {
+                        Val::Num(n.iter().map(|&x| str_to_num(&self.string_value(x))).sum())
+                    }
                     _ => return err("sum() expects a node-set"),
                 }
             }
@@ -1415,13 +1674,20 @@ impl<'a, T: Tree> Eval<'a, T> {
                 match self.dialect {
                     // Odoo: set(node.attrib.get('class', '').split()).issuperset(cls)
                     Dialect::Lxml => {
-                        let classes: Vec<&str> = class.split(py_is_space).filter(|s| !s.is_empty()).collect();
-                        Val::Bool(vals.iter().all(|v| classes.contains(&self.string(v).as_str())))
+                        let classes: Vec<&str> =
+                            class.split(py_is_space).filter(|s| !s.is_empty()).collect();
+                        Val::Bool(
+                            vals.iter()
+                                .all(|v| classes.contains(&self.string(v).as_str())),
+                        )
                     }
                     // contains(concat(' ', @class, ' '), ' c ') and ...
                     Dialect::Browser => {
                         let padded = format!(" {class} ");
-                        Val::Bool(vals.iter().all(|v| padded.contains(&format!(" {} ", self.string(v)))))
+                        Val::Bool(
+                            vals.iter()
+                                .all(|v| padded.contains(&format!(" {} ", self.string(v)))),
+                        )
                     }
                 }
             }
@@ -1458,7 +1724,11 @@ fn str_to_num(s: &str) -> f64 {
         && body.chars().all(|c| c.is_ascii_digit() || c == '.')
         && body.matches('.').count() <= 1
         && body != ".";
-    if valid { t.parse().unwrap_or(f64::NAN) } else { f64::NAN }
+    if valid {
+        t.parse().unwrap_or(f64::NAN)
+    } else {
+        f64::NAN
+    }
 }
 
 fn num_to_str(x: f64) -> String {
@@ -1474,7 +1744,11 @@ fn num_to_str(x: f64) -> String {
 }
 
 fn xpath_round(x: f64) -> f64 {
-    if x.is_nan() || x.is_infinite() { x } else { (x + 0.5).floor() }
+    if x.is_nan() || x.is_infinite() {
+        x
+    } else {
+        (x + 0.5).floor()
+    }
 }
 
 #[cfg(test)]
@@ -1520,12 +1794,39 @@ mod tests {
         assert_eq!(sel(DOC, "//span[@id='5']/ancestor::*"), ["t", "div#4"]);
         assert_eq!(sel(DOC, "//span[@id='5']/ancestor::*[1]"), ["div#4"]);
         assert_eq!(sel(DOC, "//span[.='hi']"), ["span#2"]);
-        assert_eq!(sel(DOC, "//div[contains(@class, 'a') and not(@id=4)]"), ["div#1"]);
+        assert_eq!(
+            sel(DOC, "//div[contains(@class, 'a') and not(@id=4)]"),
+            ["div#1"]
+        );
         assert_eq!(sel(DOC, "//*[local-name()='p']"), ["p#3"]);
         assert_eq!(sel(DOC, "//div[count(*) = 1]"), ["div#4"]);
-        assert_eq!(sel(DOC, "//span[@id='2']/following::*"), ["p#3", "div#4", "span#5"]);
+        assert_eq!(
+            sel(DOC, "//span[@id='2']/following::*"),
+            ["p#3", "div#4", "span#5"]
+        );
         assert_eq!(sel(DOC, "//span[@id > 3]"), ["span#5"]);
         assert_eq!(sel(DOC, "//div/@class"), ["@a b", "@b"]);
+    }
+
+    /// `//x[p]` is evaluated as `descendant::x[p]` only when `p` does not
+    /// depend on the position.
+    #[test]
+    fn descendant_shortcut() {
+        const D: &str = r#"<t><a id="1"><b id="2"/><b id="3"/></a><a id="4"><b id="5"/></a></t>"#;
+        assert_eq!(sel(D, "//b[1]"), ["b#2", "b#5"]);
+        assert_eq!(sel(D, "//b[last()]"), ["b#3", "b#5"]);
+        assert_eq!(sel(D, "//b[position() = 2]"), ["b#3"]);
+        assert_eq!(sel(D, "//b[count(../b) - 1]"), ["b#2"]);
+        assert_eq!(sel(D, "(//b)[2]"), ["b#3"]);
+        assert_eq!(sel(D, "//b[@id = '3' or @id = 5]"), ["b#3", "b#5"]);
+        assert_eq!(sel(D, "//a[b[2]]"), ["a#1"]);
+        assert_eq!(sel(D, "//a//b"), ["b#2", "b#3", "b#5"]);
+        assert_eq!(sel(D, "//a[1]//b[1]"), ["b#2"]);
+        assert_eq!(sel(D, "//*[@id > '3']"), ["a#4", "b#5"]);
+        assert_eq!(sel(D, "//*['3' > @id]"), ["a#1", "b#2"]);
+        assert_eq!(sel(D, "//*['3' = @id]"), ["b#3"]);
+        assert_eq!(sel(D, "//a[. = '']"), ["a#1", "a#4"]);
+        assert_eq!(sel(D, "//b/.."), ["a#1", "a#4"]);
     }
 
     #[test]

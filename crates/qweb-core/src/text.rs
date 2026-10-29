@@ -3,7 +3,7 @@
 //! matches just before a trailing `\n`, which these functions reproduce.
 
 #[inline]
-fn is_sp(b: u8) -> bool {
+const fn is_sp(b: u8) -> bool {
     b == b' ' || b == b'\t'
 }
 
@@ -12,7 +12,7 @@ fn is_sp(b: u8) -> bool {
 /// Returns `(new_len, strip)` where `new_len` is the length of the string
 /// after `RSTRIP_REGEXP.sub('', s)` and `strip` is `RSTRIP_REGEXP.search(s).group(0)`
 /// (empty when no match).
-pub fn rstrip_newline(s: &str) -> (usize, &str) {
+pub(crate) fn rstrip_newline(s: &str) -> (usize, &str) {
     let b = s.as_bytes();
     let n = b.len();
     if n == 0 {
@@ -42,7 +42,7 @@ pub fn rstrip_newline(s: &str) -> (usize, &str) {
 }
 
 /// `LSTRIP_REGEXP = re.compile(r'^[ \t]*\n')` used with `search`.
-pub fn lstrip_matches(s: &str) -> bool {
+pub(crate) const fn lstrip_matches(s: &str) -> bool {
     let b = s.as_bytes();
     let mut i = 0;
     while i < b.len() && is_sp(b[i]) {
@@ -54,7 +54,7 @@ pub fn lstrip_matches(s: &str) -> bool {
 /// `FIRST_RSTRIP_REGEXP.sub(r'\2', s)` with
 /// `FIRST_RSTRIP_REGEXP = re.compile(r'^(\n[ \t]*)+(\n[ \t])')`.
 /// Returns the byte offset where the kept text starts.
-pub fn first_rstrip_offset(s: &str) -> usize {
+pub(crate) fn first_rstrip_offset(s: &str) -> usize {
     let b = s.as_bytes();
     // Split the prefix into segments `\n[ \t]*`.
     let mut segs: Vec<(usize, usize)> = Vec::new(); // (pos of \n, run length)

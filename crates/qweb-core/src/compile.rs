@@ -4,9 +4,11 @@
 //! directive order, same text-chunk buffer (`_text_concat`) and the same tree
 //! mutations, so whitespace handling and output are byte-identical. Instead
 //! of Python source, every method returns IR statements.
+//!
+//! Most hosts never use the compiler directly: [`Engine`](crate::Engine)
+//! compiles templates as they are loaded. Custom directives
+//! ([`Host::compile_directive`]) see it through [`CompileApi`].
 
-use std::cell::Cell;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::error::{Error, ErrorKind, Result};
@@ -17,41 +19,72 @@ use crate::ir::*;
 use crate::text;
 use crate::xml::{self, Document, NodeId, NodeKind, NsMap};
 
+/// HTML void elements: rendered as `<tag/>`, without a closing tag.
 pub const VOID_ELEMENTS: &[&str] = &[
-    "area", "base", "br", "col", "embed", "hr", "img", "input", "keygen", "link", "menuitem", "meta", "param",
-    "source", "track", "wbr",
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "keygen", "link", "menuitem",
+    "meta", "param", "source", "track", "wbr",
 ];
 
 /// Attributes ignored by the compiler (`SPECIAL_DIRECTIVES`).
 const SPECIAL_DIRECTIVES: &[&str] = &[
-    "t-translation", "t-ignore", "t-title", "id", "name", "data-oe-model", "data-oe-id", "data-oe-field",
-    "data-oe-xpath", "data-oe-source-id",
+    "t-translation",
+    "t-ignore",
+    "t-title",
+    "id",
+    "name",
+    "data-oe-model",
+    "data-oe-id",
+    "data-oe-field",
+    "data-oe-xpath",
+    "data-oe-source-id",
 ];
 
+/// Whether `tag` is one of [`VOID_ELEMENTS`].
+#[inline]
 pub fn is_void(tag: &str) -> bool {
     VOID_ELEMENTS.contains(&tag)
 }
 
+/// A directive, i.e. a `_compile_directive_<name>` handler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Directive {
+    /// `t-elif`
     Elif,
+    /// `t-else`
     Else,
+    /// `t-debug`
     Debug,
+    /// `t-log`
     Log,
+    /// `t-groups` / `groups`
     Groups,
+    /// `t-as`
     As,
+    /// `t-foreach`
     Foreach,
+    /// `t-if`
     If,
+    /// `t-call-assets`
     CallAssets,
+    /// `t-lang`
     Lang,
+    /// `t-options` / `t-options-*`
     Options,
+    /// `t-call`
     Call,
+    /// Attributes: static ones, `t-att`, `t-att-*` and `t-attf-*`.
     Att,
+    /// `t-field`
     Field,
+    /// `t-out`
     Out,
+    /// Start tag (internal `t-tag-open`).
     TagOpen,
+    /// `t-set`
     Set,
+    /// Element content (internal `t-inner-content`).
     InnerContent,
+    /// End tag (internal `t-tag-close`).
     TagClose,
     /// Host-defined directive (index in the compiler's custom names).
     Custom(u16),
@@ -146,21 +179,20 @@ pub const DIRECTIVES_ORDER: &[Directive] = &[
 /// (`_compile_directive_value`, `_valuef`, `_consumed_options`).
 const EXTRA_HANDLER_ATTRS: &[&str] = &["t-value", "t-valuef", "t-consumed-options"];
 
-/// Shared directive iterator (`compile_context['iter_directives']`).
+/// Position in the directive order of one element
+/// (`compile_context['iter_directives']`). Handlers that compile the rest of
+/// the element (`t-if`, `t-foreach`, `t-groups`, ...) continue the same
+/// iteration, so the cursor is passed down by `&mut`.
+#[derive(Default)]
 struct DirIter {
-    order: Rc<[Directive]>,
-    pos: Cell<usize>,
+    pos: usize,
 }
 
 impl DirIter {
-    fn new(order: &Rc<[Directive]>) -> Rc<DirIter> {
-        Rc::new(DirIter { order: order.clone(), pos: Cell::new(0) })
-    }
-    fn next(&self) -> Option<Directive> {
-        let p = self.pos.get();
-        let d = self.order.get(p).copied();
+    fn next(&mut self, order: &[Directive]) -> Option<Directive> {
+        let d = order.get(self.pos).copied();
         if d.is_some() {
-            self.pos.set(p + 1);
+            self.pos += 1;
         }
         d
     }
@@ -175,23 +207,29 @@ struct Cx {
 
 type Code<H> = Vec<Stmt<H>>;
 
+/// Template compiler. A compiler compiles one template:
+/// see [`Compiler::compile`].
 pub struct Compiler<'a, H: Host> {
     host: &'a H,
     ctx: &'a H::Context,
     opts: CompileOptions,
     hooks: CompileHooks,
     /// Directive evaluation order.
-    order: Rc<[Directive]>,
+    order: Box<[Directive]>,
     /// Names of the custom directives (`Directive::Custom` indexes).
     custom: Vec<String>,
+    /// The template, mutated while compiling like the Python lxml tree.
     doc: Document,
+    /// Pending static text chunks (`_text_concat`).
     text: Vec<String>,
+    /// Compiled function bodies (lazy `t-set`/`t-call` bodies, then main).
     blocks: Vec<Code<H>>,
     name: Arc<str>,
     reference: Arc<str>,
-    /// Location of each compiled element, taken before its directives are
-    /// processed (`compile_context['_qweb_error_path_xml']`).
-    locs: std::collections::HashMap<NodeId, Loc>,
+    /// Location of each compiled element, indexed by [`NodeId`], taken
+    /// before its directives are processed
+    /// (`compile_context['_qweb_error_path_xml']`).
+    locs: Vec<Option<Loc>>,
 }
 
 /// Compiler interface given to custom directive handlers
@@ -199,7 +237,10 @@ pub struct Compiler<'a, H: Host> {
 pub trait CompileApi<H: Host> {
     /// Element being compiled.
     fn node(&self) -> NodeId;
+    /// The template tree. Compiled attributes have been removed from their
+    /// elements (as `attrib.pop` does in Python).
     fn doc(&self) -> &Document;
+    /// The template tree, for handlers that rewrite it.
     fn doc_mut(&mut self) -> &mut Document;
     /// `_append_text`: add static text to the output.
     fn append_text(&mut self, text: &str);
@@ -247,6 +288,11 @@ impl<H: Host> CompileApi<H> for DirApi<'_, '_, H> {
     }
 }
 
+// `is_varname`, `py_isspace` and `py_int` check template attributes that are
+// not expressions (`t-set`/`t-as` names, `t-if` emptiness, `t-call` names), so
+// they follow the Python checks rather than the expression grammar: e.g.
+// `t-as="for"` is a valid varname, but not a valid expression.
+
 /// `VARNAME_REGEXP = r'^[A-Za-z_][A-Za-z0-9_]*$'`
 fn is_varname(s: &str) -> bool {
     let b = s.as_bytes();
@@ -255,47 +301,59 @@ fn is_varname(s: &str) -> bool {
         && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_')
 }
 
-/// Python `str.isspace()`.
-pub fn py_isspace(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_whitespace() || ('\x1c'..='\x1f').contains(&c))
+/// A whitespace character for Python's `str.isspace()` / `str.strip()`.
+fn is_py_space(c: char) -> bool {
+    c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)
 }
 
-/// Python `int(s)` for template references (`_id_or_xmlid`).
+/// Python `str.isspace()`.
+pub fn py_isspace(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(is_py_space)
+}
+
+/// Python `int(s)` for a str that fits in an `i64` (surrounding whitespace,
+/// a sign and `_` separators are accepted; other digits than ASCII are not).
+///
+/// ```
+/// use qweb_core::compile::py_int;
+/// assert_eq!(py_int(" -1_000\n"), Some(-1000));
+/// assert_eq!(py_int("1__0"), None);
+/// ```
 pub fn py_int(s: &str) -> Option<i64> {
-    let t = s.trim_matches(|c: char| c.is_whitespace());
+    let t = s.trim_matches(is_py_space);
     let (neg, digits) = match t.as_bytes().first() {
         Some(b'-') => (true, &t[1..]),
         Some(b'+') => (false, &t[1..]),
         _ => (false, t),
     };
-    if digits.is_empty() || digits.starts_with('_') || digits.ends_with('_') || digits.contains("__") {
+    if digits.is_empty()
+        || digits.starts_with('_')
+        || digits.ends_with('_')
+        || digits.contains("__")
+    {
         return None;
     }
     if !digits.bytes().all(|b| b.is_ascii_digit() || b == b'_') {
         return None;
     }
     let clean: String = digits.chars().filter(|&c| c != '_').collect();
-    let v: i64 = clean.parse().ok()?;
-    Some(if neg { -v } else { v })
-}
-
-/// `_id_or_xmlid`.
-pub fn template_ref(s: &str) -> TemplateRef {
-    match py_int(s) {
-        Some(i) => TemplateRef::Id(i),
-        None => TemplateRef::Name(Arc::from(s)),
+    // Parse with the sign so that `i64::MIN` is accepted.
+    if neg {
+        format!("-{clean}").parse().ok()
+    } else {
+        clean.parse().ok()
     }
 }
 
 fn compile_bool(attr: Option<String>, default: bool) -> bool {
-    if let Some(a) = attr {
-        if !a.is_empty() {
-            let l = a.to_lowercase();
-            if l == "false" || l == "0" {
-                return false;
-            } else if l == "true" || l == "1" {
-                return true;
-            }
+    if let Some(a) = attr
+        && !a.is_empty()
+    {
+        let l = a.to_lowercase();
+        if l == "false" || l == "0" {
+            return false;
+        } else if l == "true" || l == "1" {
+            return true;
         }
     }
     default
@@ -303,6 +361,10 @@ fn compile_bool(attr: Option<String>, default: bool) -> bool {
 
 impl<'a, H: Host> Compiler<'a, H> {
     /// Compile the template whose root element is the document root.
+    ///
+    /// `name` is used in error messages, `xmlid` and `viewid` become the
+    /// `xmlid` / `viewid` template values (`xmlid` defaults to the root
+    /// `t-name`).
     pub fn compile(
         host: &'a H,
         ctx: &'a H::Context,
@@ -314,7 +376,7 @@ impl<'a, H: Host> Compiler<'a, H> {
         let opts = host.compile_options(ctx);
         let hooks = host.compile_hooks(ctx)?;
         let mut custom = Vec::new();
-        let order: Rc<[Directive]> = match &hooks.order {
+        let order: Box<[Directive]> = match &hooks.order {
             None => DIRECTIVES_ORDER.into(),
             Some(names) => names
                 .iter()
@@ -335,6 +397,7 @@ impl<'a, H: Host> Compiler<'a, H> {
             }
             None => name.clone(),
         };
+        let locs = vec![None; doc.nodes.len()];
         let mut c = Compiler {
             host,
             ctx,
@@ -347,11 +410,14 @@ impl<'a, H: Host> Compiler<'a, H> {
             blocks: Vec::new(),
             name: name.clone(),
             reference: reference.clone(),
-            locs: std::collections::HashMap::new(),
+            locs,
         };
         let root = c.doc.root;
         let ref_name = xmlid.or_else(|| c.doc.node(root).get("t-name").map(str::to_owned));
-        let mut cx = Cx { attrs_created: false, nsmap };
+        let mut cx = Cx {
+            attrs_created: false,
+            nsmap,
+        };
         // `self._append_text("", compile_context)` before compiling the root.
         c.append(String::new());
         let mut main = c.compile_root(root, &mut cx)?;
@@ -386,7 +452,9 @@ impl<'a, H: Host> Compiler<'a, H> {
 
     /// `_rstrip_text`.
     fn rstrip(&mut self) -> String {
-        let Some(last) = self.text.last_mut() else { return String::new() };
+        let Some(last) = self.text.last_mut() else {
+            return String::new();
+        };
         let (len, strip) = text::rstrip_newline(last);
         let strip = strip.to_owned();
         last.truncate(len);
@@ -411,10 +479,19 @@ impl<'a, H: Host> Compiler<'a, H> {
 
     // ----- helpers -----------------------------------------------------------
 
+    /// Location of an element for error messages: the one recorded when
+    /// its compilation started, or its current state.
     fn loc(&self, id: NodeId) -> Loc {
-        match self.locs.get(&id) {
+        match self.locs.get(id).and_then(Option::as_ref) {
             Some(l) => l.clone(),
-            None => Loc { path: Arc::from(self.doc.path(id)), element: Arc::from(self.doc.start_tag_repr(id)) },
+            None => self.current_loc(id),
+        }
+    }
+
+    fn current_loc(&self, id: NodeId) -> Loc {
+        Loc {
+            path: Arc::from(self.doc.path(id)),
+            element: Arc::from(self.doc.start_tag_repr(id)),
         }
     }
 
@@ -479,30 +556,46 @@ impl<'a, H: Host> Compiler<'a, H> {
         }
         let name = self.dname(d).to_owned();
         let (host, ctx) = (self.host, self.ctx);
-        let mut api = DirApi { c: self, cx, id, code: Vec::new() };
+        let mut api = DirApi {
+            c: self,
+            cx,
+            id,
+            code: Vec::new(),
+        };
         host.check_directive(ctx, &name, &mut api)
     }
 
     fn directive_custom(&mut self, id: NodeId, cx: &mut Cx, i: u16) -> Result<Code<H>> {
         let name = self.custom[i as usize].clone();
         let (host, ctx) = (self.host, self.ctx);
-        let mut api = DirApi { c: self, cx, id, code: Vec::new() };
+        let mut api = DirApi {
+            c: self,
+            cx,
+            id,
+            code: Vec::new(),
+        };
         host.compile_directive(ctx, &name, &mut api)?;
         Ok(api.code)
     }
 
+    /// Compile a Python expression; `raise_on_missing` makes every name
+    /// lookup strict. Expressions the native parser does not support are
+    /// compiled by the host ([`Host::compile_opaque`]).
     pub fn compile_expr(&self, src: &str, raise_on_missing: bool) -> Result<Ex<H>> {
         if self.hooks.check_expr {
             self.host.check_expr(self.ctx, src)?;
         }
         match expr::parse(src, raise_on_missing) {
             Ok(e) => Ok(self.lower(e)),
-            Err(ParseError::Dunder(n)) => {
-                Err(Error::syntax(format!("Using variable names with '__' is not allowed: {}", py_repr_str(&n))))
-            }
+            Err(ParseError::Dunder(n)) => Err(Error::syntax(format!(
+                "Using variable names with '__' is not allowed: {}",
+                py_repr_str(&n)
+            ))),
             Err(err) => match self.host.compile_opaque(src, raise_on_missing)? {
                 Some(op) => Ok(Ex::Opaque(Box::new(op))),
-                None => Err(Error::new(ErrorKind::Syntax(format!("Can not compile expression: {src} ({err})")))),
+                None => Err(Error::new(ErrorKind::Syntax(format!(
+                    "Can not compile expression: {src} ({err})"
+                )))),
             },
         }
     }
@@ -521,7 +614,11 @@ impl<'a, H: Host> Compiler<'a, H> {
             Expr::Float(v) => Ex::Const(h.float(v)),
             Expr::Str(s) => Ex::Const(h.str(&s)),
             Expr::Bytes(v) => Ex::Const(h.bytes(&v)),
-            Expr::Name { name, strict } => Ex::Var { key: h.key(&name), name: Arc::from(name.as_str()), strict },
+            Expr::Name { name, strict } => Ex::Var {
+                key: h.key(&name),
+                name: Arc::from(name.as_str()),
+                strict,
+            },
             Expr::Builtin(name) => match h.builtin(&name) {
                 Some(v) => Ex::Const(v),
                 None => Ex::Unknown(Arc::from(name.as_str())),
@@ -532,7 +629,10 @@ impl<'a, H: Host> Compiler<'a, H> {
             Expr::Call { func, args, kwargs } => Ex::Call {
                 func: b(*func),
                 args: args.into_iter().map(|a| self.lower(a)).collect(),
-                kwargs: kwargs.into_iter().map(|(k, v)| (h.key(&k), self.lower(v))).collect(),
+                kwargs: kwargs
+                    .into_iter()
+                    .map(|(k, v)| (h.key(&k), self.lower(v)))
+                    .collect(),
             },
             Expr::Unary(op, v) => {
                 if let (expr::UnOp::Neg, Expr::Int(i)) = (op, &*v) {
@@ -545,21 +645,40 @@ impl<'a, H: Host> Compiler<'a, H> {
             }
             Expr::Not(v) => Ex::Not(b(*v)),
             Expr::Bin(op, l, r) => Ex::Bin(op, b(*l), b(*r)),
-            Expr::Cmp(first, rest) => Ex::Cmp(b(*first), rest.into_iter().map(|(op, e)| (op, self.lower(e))).collect()),
+            Expr::Cmp(first, rest) => Ex::Cmp(
+                b(*first),
+                rest.into_iter()
+                    .map(|(op, e)| (op, self.lower(e)))
+                    .collect(),
+            ),
             Expr::And(items) => Ex::And(items.into_iter().map(|e| self.lower(e)).collect()),
             Expr::Or(items) => Ex::Or(items.into_iter().map(|e| self.lower(e)).collect()),
             Expr::IfElse { cond, then, orelse } => Ex::IfElse(b(*cond), b(*then), b(*orelse)),
             Expr::Tuple(items) => {
                 let lowered: Vec<Ex<H>> = items.into_iter().map(|e| self.lower(e)).collect();
                 if lowered.iter().all(|e| matches!(e, Ex::Const(_))) {
-                    let vals = lowered.into_iter().map(|e| if let Ex::Const(v) = e { v } else { unreachable!() }).collect();
+                    let vals = lowered
+                        .into_iter()
+                        .map(|e| {
+                            if let Ex::Const(v) = e {
+                                v
+                            } else {
+                                unreachable!()
+                            }
+                        })
+                        .collect();
                     return Ex::Const(h.tuple(vals));
                 }
                 Ex::Tuple(lowered)
             }
             Expr::List(items) => Ex::List(items.into_iter().map(|e| self.lower(e)).collect()),
             Expr::Set(items) => Ex::Set(items.into_iter().map(|e| self.lower(e)).collect()),
-            Expr::Dict(items) => Ex::Dict(items.into_iter().map(|(k, v)| (self.lower(k), self.lower(v))).collect()),
+            Expr::Dict(items) => Ex::Dict(
+                items
+                    .into_iter()
+                    .map(|(k, v)| (self.lower(k), self.lower(v)))
+                    .collect(),
+            ),
         }
     }
 
@@ -597,10 +716,10 @@ impl<'a, H: Host> Compiler<'a, H> {
         let n = self.doc.node(id);
         n.tag != "t"
             && !n.has("groups")
-            && !n
-                .attrs
-                .iter()
-                .any(|(k, _)| k.starts_with("t-") && !matches!(k.as_str(), "t-tag-open" | "t-tag-close" | "t-inner-content"))
+            && !n.attrs.iter().any(|(k, _)| {
+                k.starts_with("t-")
+                    && !matches!(k.as_str(), "t-tag-open" | "t-tag-close" | "t-inner-content")
+            })
     }
 
     fn compile_node(&mut self, id: NodeId, cx: &mut Cx) -> Result<Code<H>> {
@@ -614,9 +733,13 @@ impl<'a, H: Host> Compiler<'a, H> {
             return self.compile_static_node(id, cx);
         }
         let (unqualified, el_tag) = self.el_tag(id);
-        let loc = Loc { path: Arc::from(self.doc.path(id)), element: Arc::from(self.doc.start_tag_repr(id)) };
-        self.locs.insert(id, loc);
-        let iter = DirIter::new(&self.order);
+        let loc = self.current_loc(id);
+        if self.locs.len() <= id {
+            // nodes created by custom directives
+            self.locs.resize(id + 1, None);
+        }
+        self.locs[id] = Some(loc);
+        let mut iter = DirIter::default();
         {
             let n = self.doc.node_mut(id);
             if unqualified != "t" {
@@ -629,7 +752,7 @@ impl<'a, H: Host> Compiler<'a, H> {
                 n.set("t-inner-content", "True");
             }
         }
-        self.compile_directives(id, cx, &iter)
+        self.compile_directives(id, cx, &mut iter)
     }
 
     fn pre_processing_att(&mut self, id: NodeId) -> Result<()> {
@@ -640,13 +763,19 @@ impl<'a, H: Host> Compiler<'a, H> {
             return res;
         }
         // `_remove_translate_suffix`
-        let keys: Vec<String> = self.doc.node(id).attrs.iter().map(|(k, _)| k.clone()).collect();
+        let keys: Vec<String> = self
+            .doc
+            .node(id)
+            .attrs
+            .iter()
+            .map(|(k, _)| k.clone())
+            .collect();
         let n = self.doc.node_mut(id);
         for key in keys {
-            if let Some(base) = key.strip_suffix(".translate") {
-                if let Some(v) = n.pop(&key) {
-                    n.set(base, v);
-                }
+            if let Some(base) = key.strip_suffix(".translate")
+                && let Some(v) = n.pop(&key)
+            {
+                n.set(base, v);
             }
         }
         Ok(())
@@ -692,11 +821,13 @@ impl<'a, H: Host> Compiler<'a, H> {
         self.pre_processing_att(id)?;
         let has_ns = !self.doc.node(id).nsmap.is_empty();
         let (unqualified, el_tag) = self.el_tag(id);
+        // The attributes are consumed (Python clears them after output).
+        let attrs = std::mem::take(&mut self.doc.node_mut(id).attrs);
         let attrib: Vec<(String, String)> = if !has_ns {
-            self.doc.node(id).attrs.clone()
+            attrs
         } else {
             let mut a = self.new_namespaces(id, &cx.nsmap);
-            for (k, v) in self.doc.node(id).attrs.clone() {
+            for (k, v) in attrs {
                 let name = self.attr_qname(id, &cx.nsmap, &k);
                 if let Some(slot) = a.iter_mut().find(|(n, _)| *n == name) {
                     slot.1 = v;
@@ -726,7 +857,6 @@ impl<'a, H: Host> Compiler<'a, H> {
             self.append(s);
             self.append_str(if is_void(&el_tag) { "/>" } else { ">" });
         }
-        self.doc.node_mut(id).attrs.clear();
         let body = if has_ns {
             let original = cx.nsmap.clone();
             let mut merged: Vec<(Option<String>, String)> = (*cx.nsmap).clone();
@@ -738,7 +868,9 @@ impl<'a, H: Host> Compiler<'a, H> {
                 }
             }
             cx.nsmap = Arc::new(merged);
-            let body = self.check(id, cx, Directive::InnerContent).and_then(|_| self.directive_inner_content(id, cx));
+            let body = self
+                .check(id, cx, Directive::InnerContent)
+                .and_then(|_| self.directive_inner_content(id, cx));
             cx.nsmap = original;
             body?
         } else {
@@ -751,7 +883,12 @@ impl<'a, H: Host> Compiler<'a, H> {
         Ok(body)
     }
 
-    fn compile_directives(&mut self, id: NodeId, cx: &mut Cx, iter: &Rc<DirIter>) -> Result<Code<H>> {
+    fn compile_directives(
+        &mut self,
+        id: NodeId,
+        cx: &mut Cx,
+        iter: &mut DirIter,
+    ) -> Result<Code<H>> {
         if self.is_static_node(id) {
             let n = self.doc.node_mut(id);
             n.pop("t-tag-open");
@@ -761,7 +898,7 @@ impl<'a, H: Host> Compiler<'a, H> {
         }
         let mut code = Vec::new();
         let mut last: Option<Directive> = None;
-        while let Some(d) = iter.next() {
+        while let Some(d) = iter.next(&self.order) {
             last = Some(d);
             let n = self.doc.node(id);
             let run = if n.has(&self.dattr(d)) {
@@ -775,7 +912,9 @@ impl<'a, H: Host> Compiler<'a, H> {
                 }
             };
             if run {
-                let c = self.compile_directive(id, cx, d, iter).map_err(|e| self.located(e, id))?;
+                let c = self
+                    .compile_directive(id, cx, d, iter)
+                    .map_err(|e| self.located(e, id))?;
                 code.extend(c);
             }
         }
@@ -788,13 +927,17 @@ impl<'a, H: Host> Compiler<'a, H> {
             .iter()
             .map(|(k, _)| k.clone())
             .filter(|k| {
-                !SPECIAL_DIRECTIVES.contains(&k.as_str()) && k.starts_with("t-") && self.has_handler(k)
+                !SPECIAL_DIRECTIVES.contains(&k.as_str())
+                    && k.starts_with("t-")
+                    && self.has_handler(k)
             })
             .collect();
         for _ in leftovers {
             match last {
                 Some(d) => {
-                    let c = self.compile_directive(id, cx, d, iter).map_err(|e| self.located(e, id))?;
+                    let c = self
+                        .compile_directive(id, cx, d, iter)
+                        .map_err(|e| self.located(e, id))?;
                     code.extend(c);
                 }
                 None => {
@@ -825,7 +968,13 @@ impl<'a, H: Host> Compiler<'a, H> {
         Ok(code)
     }
 
-    fn compile_directive(&mut self, id: NodeId, cx: &mut Cx, d: Directive, iter: &Rc<DirIter>) -> Result<Code<H>> {
+    fn compile_directive(
+        &mut self,
+        id: NodeId,
+        cx: &mut Cx,
+        d: Directive,
+        iter: &mut DirIter,
+    ) -> Result<Code<H>> {
         self.check(id, cx, d)?;
         match d {
             Directive::Custom(i) => self.directive_custom(id, cx, i),
@@ -856,13 +1005,20 @@ impl<'a, H: Host> Compiler<'a, H> {
     fn directive_debug(&mut self, id: NodeId) -> Result<Code<H>> {
         self.doc.node_mut(id).pop("t-debug");
         if !self.opts.dev_mode {
-            self.host.warn("@t-debug in template is only available in qweb dev mode");
+            self.host
+                .warn("@t-debug in template is only available in qweb dev mode");
         }
         Ok(Vec::new())
     }
 
     fn directive_options(&mut self, id: NodeId) -> Result<Code<H>> {
-        let keys: Vec<String> = self.doc.node(id).attrs.iter().map(|(k, _)| k.clone()).collect();
+        let keys: Vec<String> = self
+            .doc
+            .node(id)
+            .attrs
+            .iter()
+            .map(|(k, _)| k.clone())
+            .collect();
         let mut items = Vec::new();
         for key in keys {
             if let Some(name) = key.strip_prefix("t-options-") {
@@ -881,9 +1037,15 @@ impl<'a, H: Host> Compiler<'a, H> {
 
     fn directive_att(&mut self, id: NodeId, cx: &mut Cx) -> Result<Code<H>> {
         let n = self.doc.node(id);
-        let is_t = if n.nsmap.is_empty() { n.tag == "t" } else { n.local_name() == "t" };
+        let is_t = if n.nsmap.is_empty() {
+            n.tag == "t"
+        } else {
+            n.local_name() == "t"
+        };
         if is_t {
-            let produces = ["t-out", "t-esc", "t-raw"].iter().any(|a| n.get(a).is_some_and(|v| !v.is_empty()));
+            let produces = ["t-out", "t-esc", "t-raw"]
+                .iter()
+                .any(|a| n.get(a).is_some_and(|v| !v.is_empty()));
             if !produces && n.parent.is_some() {
                 return Ok(Vec::new());
             }
@@ -895,20 +1057,40 @@ impl<'a, H: Host> Compiler<'a, H> {
         let loc = self.loc(id);
         if !self.doc.node(id).nsmap.is_empty() {
             for (k, v) in self.new_namespaces(id, &cx.nsmap) {
-                code.push(Stmt::AttrSet { name: Arc::from(k), value: AttrSrc::Static(Arc::from(v)), loc: loc.clone() });
+                code.push(Stmt::AttrSet {
+                    name: Arc::from(k),
+                    value: AttrSrc::Static(Arc::from(v)),
+                    loc: loc.clone(),
+                });
             }
         }
         self.pre_processing_att(id)?;
         // static attributes
-        let statics: Vec<(String, String)> =
-            self.doc.node(id).attrs.iter().filter(|(k, _)| !k.starts_with("t-")).cloned().collect();
+        let statics: Vec<(String, String)> = self
+            .doc
+            .node(id)
+            .attrs
+            .iter()
+            .filter(|(k, _)| !k.starts_with("t-"))
+            .cloned()
+            .collect();
         for (key, value) in statics {
             self.doc.node_mut(id).pop(&key);
             let name = self.attr_qname(id, &cx.nsmap, &key);
-            code.push(Stmt::AttrSet { name: Arc::from(name), value: AttrSrc::Static(Arc::from(value)), loc: loc.clone() });
+            code.push(Stmt::AttrSet {
+                name: Arc::from(name),
+                value: AttrSrc::Static(Arc::from(value)),
+                loc: loc.clone(),
+            });
         }
         // dynamic attributes, in source order
-        let keys: Vec<String> = self.doc.node(id).attrs.iter().map(|(k, _)| k.clone()).collect();
+        let keys: Vec<String> = self
+            .doc
+            .node(id)
+            .attrs
+            .iter()
+            .map(|(k, _)| k.clone())
+            .collect();
         for key in keys {
             if let Some(name) = key.strip_prefix("t-attf-") {
                 let value = self.doc.node_mut(id).pop(&key).unwrap_or_default();
@@ -926,7 +1108,10 @@ impl<'a, H: Host> Compiler<'a, H> {
                 });
             } else if key == "t-att" {
                 let value = self.doc.node_mut(id).pop(&key).unwrap_or_default();
-                code.push(Stmt::AttrUpdate { value: self.compile_expr(&value, false)?, loc: loc.clone() });
+                code.push(Stmt::AttrUpdate {
+                    value: self.compile_expr(&value, false)?,
+                    loc: loc.clone(),
+                });
             }
         }
         if !code.is_empty() {
@@ -937,14 +1122,18 @@ impl<'a, H: Host> Compiler<'a, H> {
     }
 
     fn directive_tag_open(&mut self, id: NodeId, cx: &mut Cx) -> Result<Code<H>> {
-        let Some(el_tag) = self.doc.node_mut(id).pop("t-tag-open") else { return Ok(Vec::new()) };
+        let Some(el_tag) = self.doc.node_mut(id).pop("t-tag-open") else {
+            return Ok(Vec::new());
+        };
         if el_tag.is_empty() {
             return Ok(Vec::new());
         }
         self.append(format!("<{el_tag}"));
         let code = if cx.attrs_created {
             let mut code = self.flush(false);
-            code.push(Stmt::AttrsFlush { tag: Arc::from(self.doc.node(id).tag.as_str()) });
+            code.push(Stmt::AttrsFlush {
+                tag: Arc::from(self.doc.node(id).tag.as_str()),
+            });
             code
         } else {
             Vec::new()
@@ -955,24 +1144,29 @@ impl<'a, H: Host> Compiler<'a, H> {
     }
 
     fn directive_tag_close(&mut self, id: NodeId) -> Result<Code<H>> {
-        if let Some(el_tag) = self.doc.node_mut(id).pop("t-tag-close") {
-            if !el_tag.is_empty() {
-                self.append(format!("</{el_tag}>"));
-            }
+        if let Some(el_tag) = self.doc.node_mut(id).pop("t-tag-close")
+            && !el_tag.is_empty()
+        {
+            self.append(format!("</{el_tag}>"));
         }
+
         Ok(Vec::new())
     }
 
     fn directive_set(&mut self, id: NodeId, cx: &mut Cx) -> Result<Code<H>> {
         let is_t = self.is_t(id);
         let mut code = self.flush(is_t);
-        let Some(varname) = self.doc.node_mut(id).pop("t-set") else { return Ok(code) };
+        let Some(varname) = self.doc.node_mut(id).pop("t-set") else {
+            return Ok(code);
+        };
         if varname.is_empty() {
             return Err(Error::key("'t-set'"));
         }
         let first = varname.chars().next().unwrap();
         if varname != "0" && first != '{' && !is_varname(&varname) {
-            return Err(Error::syntax("The varname can only contain alphanumeric characters and underscores."));
+            return Err(Error::syntax(
+                "The varname can only contain alphanumeric characters and underscores.",
+            ));
         }
         if varname.contains("__") {
             return Err(Error::syntax(format!(
@@ -986,31 +1180,64 @@ impl<'a, H: Host> Compiler<'a, H> {
                 return Err(Error::key("'t-inner-content'"));
             }
             if varname == "0" {
-                return Err(Error::syntax("t-set=\"0\" should not be set from t-value or t-valuef"));
+                return Err(Error::syntax(
+                    "t-set=\"0\" should not be set from t-value or t-valuef",
+                ));
             }
         }
         let key = self.host.key(&varname);
         let loc = self.loc(id);
         if let Some(expr) = self.doc.node_mut(id).pop("t-value") {
-            let expr = if expr.is_empty() { "None".to_owned() } else { expr };
-            code.push(Stmt::Set { key, value: self.compile_expr(&expr, false)?, loc });
+            let expr = if expr.is_empty() {
+                "None".to_owned()
+            } else {
+                expr
+            };
+            code.push(Stmt::Set {
+                key,
+                value: self.compile_expr(&expr, false)?,
+                loc,
+            });
         } else if let Some(exprf) = self.doc.node_mut(id).pop("t-valuef") {
-            code.push(Stmt::SetFormat { key, fmt: self.compile_format(&exprf)?, markup: false, loc });
+            code.push(Stmt::SetFormat {
+                key,
+                fmt: self.compile_format(&exprf)?,
+                markup: false,
+                loc,
+            });
         } else if let Some(exprf) = self.doc.node_mut(id).pop("t-valuef.translate") {
             let markup = self.opts.edit_translations;
-            code.push(Stmt::SetFormat { key, fmt: self.compile_format(&exprf)?, markup, loc });
+            code.push(Stmt::SetFormat {
+                key,
+                fmt: self.compile_format(&exprf)?,
+                markup,
+                loc,
+            });
         } else if first == '{' {
-            code.push(Stmt::SetUpdate { value: self.compile_expr(&varname, false)?, loc });
+            code.push(Stmt::SetUpdate {
+                value: self.compile_expr(&varname, false)?,
+                loc,
+            });
         } else {
-            let mut sub = Cx { attrs_created: false, nsmap: cx.nsmap.clone() };
+            let mut sub = Cx {
+                attrs_created: false,
+                nsmap: cx.nsmap.clone(),
+            };
             self.check(id, &mut sub, Directive::InnerContent)?;
             let mut content = self.directive_inner_content(id, &mut sub)?;
             content.extend(self.flush(false));
             if !content.is_empty() {
                 self.blocks.push(content);
-                code.push(Stmt::SetLazy { key, block: self.blocks.len() - 1, loc: self.loc(id) });
+                code.push(Stmt::SetLazy {
+                    key,
+                    block: self.blocks.len() - 1,
+                    loc: self.loc(id),
+                });
             } else {
-                code.push(Stmt::SetConst { key, value: self.host.str("") });
+                code.push(Stmt::SetConst {
+                    key,
+                    value: self.host.str(""),
+                });
             }
         }
         Ok(code)
@@ -1020,7 +1247,10 @@ impl<'a, H: Host> Compiler<'a, H> {
         self.doc.node_mut(id).pop("t-inner-content");
         let mut local;
         let cx: &mut Cx = if !self.doc.node(id).nsmap.is_empty() {
-            local = Cx { attrs_created: cx.attrs_created, nsmap: self.doc.node(id).nsmap.clone() };
+            local = Cx {
+                attrs_created: cx.attrs_created,
+                nsmap: self.doc.node(id).nsmap.clone(),
+            };
             &mut local
         } else {
             cx
@@ -1056,7 +1286,7 @@ impl<'a, H: Host> Compiler<'a, H> {
         Ok(body)
     }
 
-    fn directive_if(&mut self, id: NodeId, cx: &mut Cx, iter: &Rc<DirIter>) -> Result<Code<H>> {
+    fn directive_if(&mut self, id: NodeId, cx: &mut Cx, iter: &mut DirIter) -> Result<Code<H>> {
         // `el.attrib.pop('t-if', el.attrib.pop('t-elif', None))`: t-elif is always popped.
         let elif = self.doc.node_mut(id).pop("t-elif");
         let expr = self.doc.node_mut(id).pop("t-if").or(elif);
@@ -1064,15 +1294,16 @@ impl<'a, H: Host> Compiler<'a, H> {
             return Err(Error::other("'NoneType' object has no attribute 'isspace'"));
         };
         if py_isspace(&expr) {
-            return Err(Error::assertion("t-if or t-elif expression should not be empty."));
+            return Err(Error::assertion(
+                "t-if or t-elif expression should not be empty.",
+            ));
         }
         let mut strip = self.rstrip();
-        if self.is_t(id) {
-            if let Some(t) = &self.doc.node(id).text {
-                if text::lstrip_matches(t) {
-                    strip.clear();
-                }
-            }
+        if self.is_t(id)
+            && let Some(t) = &self.doc.node(id).text
+            && text::lstrip_matches(t)
+        {
+            strip.clear();
         }
         let mut code = self.flush(false);
         let loc = self.loc(id);
@@ -1104,10 +1335,12 @@ impl<'a, H: Host> Compiler<'a, H> {
                         self.doc.remove_child(parent, c);
                     }
                 }
-                if let Some(tail) = &self.doc.node(id).tail {
-                    if !py_isspace(tail) {
-                        return Err(Error::syntax("Unexpected non-whitespace characters between t-if and t-else directives"));
-                    }
+                if let Some(tail) = &self.doc.node(id).tail
+                    && !py_isspace(tail)
+                {
+                    return Err(Error::syntax(
+                        "Unexpected non-whitespace characters between t-if and t-else directives",
+                    ));
                 }
                 self.doc.node_mut(id).tail = None;
                 if !strip.is_empty() {
@@ -1118,28 +1351,42 @@ impl<'a, H: Host> Compiler<'a, H> {
                 self.doc.node_mut(nid).set("t-qweb-skip", "True");
             }
         }
-        code.push(Stmt::If { cond, then, orelse, loc });
+        code.push(Stmt::If {
+            cond,
+            then,
+            orelse,
+            loc,
+        });
         Ok(code)
     }
 
-    fn directive_elif(&mut self, id: NodeId, cx: &mut Cx, iter: &Rc<DirIter>) -> Result<Code<H>> {
+    fn directive_elif(&mut self, id: NodeId, cx: &mut Cx, iter: &mut DirIter) -> Result<Code<H>> {
         if self.doc.node_mut(id).pop("t-else-valid").is_none() {
-            return Err(Error::syntax("t-elif directive must be preceded by t-if or t-elif directive"));
+            return Err(Error::syntax(
+                "t-elif directive must be preceded by t-if or t-elif directive",
+            ));
         }
         self.directive_if(id, cx, iter)
     }
 
     fn directive_else(&mut self, id: NodeId) -> Result<Code<H>> {
         if self.doc.node_mut(id).pop("t-else-valid").is_none() {
-            return Err(Error::syntax("t-elif directive must be preceded by t-if or t-elif directive"));
+            return Err(Error::syntax(
+                "t-elif directive must be preceded by t-if or t-elif directive",
+            ));
         }
         self.doc.node_mut(id).pop("t-else");
         Ok(Vec::new())
     }
 
-    fn directive_groups(&mut self, id: NodeId, cx: &mut Cx, iter: &Rc<DirIter>) -> Result<Code<H>> {
+    fn directive_groups(&mut self, id: NodeId, cx: &mut Cx, iter: &mut DirIter) -> Result<Code<H>> {
         let g2 = self.doc.node_mut(id).pop("groups");
-        let groups = self.doc.node_mut(id).pop("t-groups").or(g2).unwrap_or_else(|| "None".to_owned());
+        let groups = self
+            .doc
+            .node_mut(id)
+            .pop("t-groups")
+            .or(g2)
+            .unwrap_or_else(|| "None".to_owned());
         let strip = self.rstrip();
         let mut code = self.flush(false);
         if !strip.is_empty() && !self.is_t(id) {
@@ -1147,7 +1394,10 @@ impl<'a, H: Host> Compiler<'a, H> {
         }
         let mut body = self.compile_directives(id, cx, iter)?;
         body.extend(self.flush(true));
-        code.push(Stmt::Groups { groups: groups.into_boxed_str(), body });
+        code.push(Stmt::Groups {
+            groups: groups.into_boxed_str(),
+            body,
+        });
         Ok(code)
     }
 
@@ -1158,9 +1408,18 @@ impl<'a, H: Host> Compiler<'a, H> {
         Ok(Vec::new())
     }
 
-    fn directive_foreach(&mut self, id: NodeId, cx: &mut Cx, iter: &Rc<DirIter>) -> Result<Code<H>> {
-        let Some(expr_foreach) = self.doc.node_mut(id).pop("t-foreach") else { return Err(Error::key("'t-foreach'")) };
-        let Some(expr_as) = self.doc.node_mut(id).pop("t-as") else { return Err(Error::key("'t-as'")) };
+    fn directive_foreach(
+        &mut self,
+        id: NodeId,
+        cx: &mut Cx,
+        iter: &mut DirIter,
+    ) -> Result<Code<H>> {
+        let Some(expr_foreach) = self.doc.node_mut(id).pop("t-foreach") else {
+            return Err(Error::key("'t-foreach'"));
+        };
+        let Some(expr_as) = self.doc.node_mut(id).pop("t-as") else {
+            return Err(Error::key("'t-as'"));
+        };
         if expr_as.is_empty() {
             return Err(Error::key("'t-as'"));
         }
@@ -1177,7 +1436,8 @@ impl<'a, H: Host> Compiler<'a, H> {
         let loc = self.loc(id);
         let mut body = self.compile_directives(id, cx, iter)?;
         body.extend(self.flush(true));
-        let source = if !expr_foreach.is_empty() && expr_foreach.bytes().all(|b| b.is_ascii_digit()) {
+        let source = if !expr_foreach.is_empty() && expr_foreach.bytes().all(|b| b.is_ascii_digit())
+        {
             match expr_foreach.parse::<i64>() {
                 Ok(n) => Err(n),
                 Err(_) => Ok(self.compile_expr(&expr_foreach, false)?),
@@ -1209,7 +1469,10 @@ impl<'a, H: Host> Compiler<'a, H> {
     fn directive_out(&mut self, id: NodeId, cx: &mut Cx) -> Result<Code<H>> {
         let (expr, is_field) = match self.doc.node_mut(id).pop("t-out") {
             Some(e) => (e, false),
-            None => (self.doc.node_mut(id).pop("t-field").unwrap_or_default(), true),
+            None => (
+                self.doc.node_mut(id).pop("t-field").unwrap_or_default(),
+                true,
+            ),
         };
         let flush = self.flush(false);
         let loc = self.loc(id);
@@ -1224,30 +1487,50 @@ impl<'a, H: Host> Compiler<'a, H> {
         if !is_slot {
             if is_field {
                 let Some((record, field_name)) = expr.rsplit_once('.') else {
-                    return Err(Error::value("not enough values to unpack (expected 2, got 1)"));
+                    return Err(Error::value(
+                        "not enough values to unpack (expected 2, got 1)",
+                    ));
                 };
                 let merge = cx.attrs_created;
                 cx.attrs_created = true;
-                content = Some(OutContent::Field { record: self.compile_expr(record, true)?, field: field_name.into() });
-                convert = Some(Convert { field: true, expression: expr.clone().into(), tag: tag.clone().into(), merge });
+                content = Some(OutContent::Field {
+                    record: self.compile_expr(record, true)?,
+                    field: field_name.into(),
+                });
+                convert = Some(Convert {
+                    field: true,
+                    expression: expr.clone().into(),
+                    tag: tag.clone().into(),
+                    merge,
+                });
                 force_display_dependent = true;
             } else {
-                content = Some(if expr == "0" { OutContent::Slot } else { OutContent::Expr(self.compile_expr(&expr, false)?) });
+                content = Some(if expr == "0" {
+                    OutContent::Slot
+                } else {
+                    OutContent::Expr(self.compile_expr(&expr, false)?)
+                });
                 if consumed {
                     let merge = cx.attrs_created;
                     cx.attrs_created = true;
-                    convert = Some(Convert { field: false, expression: expr.clone().into(), tag: tag.clone().into(), merge });
+                    convert = Some(Convert {
+                        field: false,
+                        expression: expr.clone().into(),
+                        tag: tag.clone().into(),
+                        merge,
+                    });
                     force_display_dependent = true;
                 }
             }
         }
 
-        let iter = DirIter::new(&self.order);
-        let mut tag_open = self.compile_directive(id, cx, Directive::TagOpen, &iter)?;
+        let mut iter = DirIter::default();
+        let mut tag_open = self.compile_directive(id, cx, Directive::TagOpen, &mut iter)?;
         tag_open.extend(self.flush(false));
-        let mut tag_close = self.compile_directive(id, cx, Directive::TagClose, &iter)?;
+        let mut tag_close = self.compile_directive(id, cx, Directive::TagClose, &mut iter)?;
         tag_close.extend(self.flush(false));
-        let mut default_body = self.compile_directive(id, cx, Directive::InnerContent, &iter)?;
+        let mut default_body =
+            self.compile_directive(id, cx, Directive::InnerContent, &mut iter)?;
         default_body.extend(self.flush(false));
 
         let mut code = flush;
@@ -1262,25 +1545,45 @@ impl<'a, H: Host> Compiler<'a, H> {
             // (the text buffer is always empty here, flushed above)
             Otherwise::Default(default_body)
         } else if force_display_dependent {
-            Otherwise::ForceDisplay { has_tag: !(tag_open.is_empty() && tag_close.is_empty()) }
+            Otherwise::ForceDisplay {
+                has_tag: !(tag_open.is_empty() && tag_close.is_empty()),
+            }
         } else {
             Otherwise::Nothing
         };
-        code.push(Stmt::Out(Box::new(Out { content: content.unwrap(), convert, tag_open, tag_close, otherwise, loc })));
+        code.push(Stmt::Out(Box::new(Out {
+            content: content.unwrap(),
+            convert,
+            tag_open,
+            tag_close,
+            otherwise,
+            loc,
+        })));
         Ok(code)
     }
 
     fn directive_field(&mut self, id: NodeId, cx: &mut Cx) -> Result<Code<H>> {
         let n = self.doc.node(id);
         let tag = n.tag.as_str();
-        if ["table", "tbody", "thead", "tfoot", "tr", "td", "li", "ul", "ol", "dl", "dt", "dd"].contains(&tag) {
-            return Err(Error::assertion(format!("QWeb widgets do not work correctly on {} elements", py_repr_str(tag))));
+        if [
+            "table", "tbody", "thead", "tfoot", "tr", "td", "li", "ul", "ol", "dl", "dt", "dd",
+        ]
+        .contains(&tag)
+        {
+            return Err(Error::assertion(format!(
+                "QWeb widgets do not work correctly on {} elements",
+                py_repr_str(tag)
+            )));
         }
         if tag == "t" {
-            return Err(Error::assertion("t-field can not be used on a t element, provide an actual HTML node"));
+            return Err(Error::assertion(
+                "t-field can not be used on a t element, provide an actual HTML node",
+            ));
         }
         if !n.get("t-field").unwrap_or("").contains('.') {
-            return Err(Error::assertion("t-field must have at least a dot like 'record.field_name'"));
+            return Err(Error::assertion(
+                "t-field must have at least a dot like 'record.field_name'",
+            ));
         }
         self.directive_out(id, cx)
     }
@@ -1288,20 +1591,33 @@ impl<'a, H: Host> Compiler<'a, H> {
     fn directive_call(&mut self, id: NodeId, cx: &mut Cx) -> Result<Code<H>> {
         let expr = self.doc.node_mut(id).pop("t-call").unwrap_or_default();
         let n = self.doc.node(id);
-        let el_tag = if n.nsmap.is_empty() { n.tag.as_str() } else { n.local_name() };
+        let el_tag = if n.nsmap.is_empty() {
+            n.tag.as_str()
+        } else {
+            n.local_name()
+        };
         if el_tag != "t" {
-            return Err(Error::syntax(format!("t-call must be on a <t> element (actually on <{el_tag}>).")));
+            return Err(Error::syntax(format!(
+                "t-call must be on a <t> element (actually on <{el_tag}>)."
+            )));
         }
         let is_t = self.is_t(id);
         let mut code = self.flush(is_t);
         let loc = self.loc(id);
         self.doc.node_mut(id).pop("t-consumed-options");
-        let nsmap = if cx.nsmap.is_empty() { None } else { Some(cx.nsmap.clone()) };
+        let nsmap = if cx.nsmap.is_empty() {
+            None
+        } else {
+            Some(cx.nsmap.clone())
+        };
 
         let n = self.doc.node(id);
         let has_body = !n.children.is_empty() || n.text.as_deref().is_some_and(|t| !t.is_empty());
         let body = if has_body {
-            let mut sub = Cx { attrs_created: false, nsmap: cx.nsmap.clone() };
+            let mut sub = Cx {
+                attrs_created: false,
+                nsmap: cx.nsmap.clone(),
+            };
             self.check(id, &mut sub, Directive::InnerContent)?;
             let mut content = self.directive_inner_content(id, &mut sub)?;
             self.append(String::new());
@@ -1313,11 +1629,20 @@ impl<'a, H: Host> Compiler<'a, H> {
         };
 
         let mut args = Vec::new();
-        let keys: Vec<String> = self.doc.node(id).attrs.iter().map(|(k, _)| k.clone()).collect();
+        let keys: Vec<String> = self
+            .doc
+            .node(id)
+            .attrs
+            .iter()
+            .map(|(k, _)| k.clone())
+            .collect();
         for key in keys {
             if let Some(name) = key.strip_suffix(".f") {
                 let value = self.doc.node_mut(id).pop(&key).unwrap_or_default();
-                args.push(CallArg::Format(self.host.key(name), self.compile_format(&value)?));
+                args.push(CallArg::Format(
+                    self.host.key(name),
+                    self.compile_format(&value)?,
+                ));
             } else if key.ends_with(".translate") {
                 let name = key.trim_end_matches(".translate");
                 let name = name.strip_suffix(".f").unwrap_or(name);
@@ -1330,28 +1655,35 @@ impl<'a, H: Host> Compiler<'a, H> {
                 }
             } else if !key.starts_with("t-") {
                 let value = self.doc.node_mut(id).pop(&key).unwrap_or_default();
-                args.push(CallArg::Expr(self.host.key(&key), self.compile_expr(&value, false)?));
+                args.push(CallArg::Expr(
+                    self.host.key(&key),
+                    self.compile_expr(&value, false)?,
+                ));
             } else if key == "t-args" {
                 let value = self.doc.node_mut(id).pop(&key).unwrap_or_default();
                 args.push(CallArg::Args(self.compile_expr(&value, false)?));
             }
         }
 
-        let target = if !expr.is_empty() && expr.chars().all(|c| c.is_ascii_digit()) {
-            CallTarget::Static(template_ref(&expr))
-        } else {
-            match self.compile_format(&expr)? {
-                Format::Const(_) => CallTarget::Static(template_ref(&expr)),
-                fmt => CallTarget::Dynamic { fmt, numeric: true },
-            }
+        let target = match self.compile_format(&expr)? {
+            Format::Const(_) => CallTarget::Static(TemplateRef::parse(&expr)),
+            fmt => CallTarget::Dynamic(fmt),
         };
-        code.push(Stmt::Call(Box::new(Call { body, args, target, nsmap, loc })));
+        code.push(Stmt::Call(Box::new(Call {
+            body,
+            args,
+            target,
+            nsmap,
+            loc,
+        })));
         Ok(code)
     }
 
     fn directive_lang(&mut self, id: NodeId, cx: &mut Cx) -> Result<Code<H>> {
         if !self.doc.node(id).has("t-call") {
-            return Err(Error::syntax("t-lang is an alias of t-options-lang but only available on the same node of t-call"));
+            return Err(Error::syntax(
+                "t-lang is an alias of t-options-lang but only available on the same node of t-call",
+            ));
         }
         let v = self.doc.node_mut(id).pop("t-lang").unwrap_or_default();
         self.doc.node_mut(id).set("t-options-lang", v);
@@ -1388,7 +1720,11 @@ impl<'a, H: Host> Compiler<'a, H> {
 
 /// Python `repr()` of a str (used in error messages).
 pub fn py_repr_str(s: &str) -> String {
-    let quote = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
+    let quote = if s.contains('\'') && !s.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
     let mut out = String::with_capacity(s.len() + 2);
     out.push(quote);
     for c in s.chars() {
@@ -1401,7 +1737,9 @@ pub fn py_repr_str(s: &str) -> String {
                 out.push('\\');
                 out.push(c);
             }
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => out.push_str(&format!("\\x{:02x}", c as u32)),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\x{:02x}", c as u32))
+            }
             c => out.push(c),
         }
     }

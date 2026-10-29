@@ -1,10 +1,9 @@
 //! Interpreter for compiled templates, lazy content and the template cache.
 
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use crate::compile::{Compiler, is_void, template_ref};
+use crate::compile::{Compiler, is_void};
 use crate::error::{Error, ErrorKind, Result};
 use crate::escape::escape_into;
 use crate::expr::CmpOp;
@@ -12,8 +11,12 @@ use crate::host::{CompileOptions, Host, Loaded, TemplateRef};
 use crate::ir::*;
 use crate::xml::Document;
 
-/// Maximum number of nested template frames (Python's stack limit of 50,
-/// counting its root frame).
+/// Maximum number of nested template frames.
+///
+/// Python raises `RecursionError` when `len(stack) > 50`, and its stack has
+/// one more frame than our depth (the root frame iterating the call
+/// parameters). Allowing 50 here would render templates that fail in
+/// Python.
 const MAX_DEPTH: usize = 49;
 
 // ---------------------------------------------------------------------------
@@ -28,13 +31,19 @@ struct SourceKey {
     viewid: String,
 }
 
+/// A compiled-template cache.
+type Cache<K, H> = RwLock<HashMap<K, Arc<Program<H>>>>;
+
 /// Template engine: owns the host and the compiled-template caches.
+///
+/// Both caches are bounded: when one holds `max_entries` programs it is
+/// cleared before the next insertion.
 pub struct Engine<H: Host> {
     host: H,
     /// Cache by template reference (used when `trust_names` is set).
-    by_name: RwLock<HashMap<(TemplateRef, CompileOptions), Arc<Program<H>>>>,
+    by_name: Cache<(TemplateRef, CompileOptions), H>,
     /// Cache by template source.
-    by_source: RwLock<HashMap<SourceKey, Arc<Program<H>>>>,
+    by_source: Cache<SourceKey, H>,
     /// Reuse compiled templates by name without calling the loader again.
     /// The cache must then be invalidated when templates change.
     trust_names: bool,
@@ -42,10 +51,14 @@ pub struct Engine<H: Host> {
 }
 
 impl<H: Host> Engine<H> {
+    /// An engine that calls [`Host::load`] for every template lookup.
     pub fn new(host: H) -> Arc<Self> {
         Self::with_options(host, false)
     }
 
+    /// An engine; with `trust_names`, compiled templates are reused by name
+    /// without calling [`Host::load`] again, and [`Engine::invalidate`] must
+    /// be called when templates change.
     pub fn with_options(host: H, trust_names: bool) -> Arc<Self> {
         Arc::new(Engine {
             host,
@@ -56,6 +69,7 @@ impl<H: Host> Engine<H> {
         })
     }
 
+    /// The host.
     pub fn host(&self) -> &H {
         &self.host
     }
@@ -67,7 +81,12 @@ impl<H: Host> Engine<H> {
     }
 
     /// Render a template by reference with the given values and context.
-    pub fn render(self: &Arc<Self>, template: &TemplateRef, scope: H::Scope, ctx: H::Context) -> Result<String> {
+    pub fn render(
+        self: &Arc<Self>,
+        template: &TemplateRef,
+        scope: H::Scope,
+        ctx: H::Context,
+    ) -> Result<String> {
         let program = self.program(template, &ctx)?;
         self.render_program(&program, scope, ctx)
     }
@@ -84,12 +103,24 @@ impl<H: Host> Engine<H> {
     }
 
     /// Render a compiled program.
-    pub fn render_program(self: &Arc<Self>, program: &Arc<Program<H>>, scope: H::Scope, ctx: H::Context) -> Result<String> {
+    pub fn render_program(
+        self: &Arc<Self>,
+        program: &Arc<Program<H>>,
+        scope: H::Scope,
+        ctx: H::Context,
+    ) -> Result<String> {
         let hint = program.size_hint.load(std::sync::atomic::Ordering::Relaxed);
         let mut out = String::with_capacity(hint + hint / 8);
-        let mut r = Renderer { engine: self, h: &self.host, depth: 1, memo: Vec::new() };
+        let mut r = Renderer {
+            engine: self,
+            h: &self.host,
+            depth: 1,
+            memo: Vec::new(),
+        };
         r.run_program(program, scope, ctx, &mut out)?;
-        program.size_hint.store(out.len(), std::sync::atomic::Ordering::Relaxed);
+        program
+            .size_hint
+            .store(out.len(), std::sync::atomic::Ordering::Relaxed);
         Ok(out)
     }
 
@@ -124,11 +155,17 @@ impl<H: Host> Engine<H> {
             }
             None => String::new(),
         };
-        let key = SourceKey { source, opts, xmlid, viewid: viewid_repr };
+        let key = SourceKey {
+            source,
+            opts,
+            xmlid,
+            viewid: viewid_repr,
+        };
         if let Some(p) = self.by_source.read().unwrap().get(&key) {
             return Ok(p.clone());
         }
-        let program = Arc::new(self.compile_program(&key.source, ctx, key.xmlid.clone(), viewid, name)?);
+        let program =
+            Arc::new(self.compile_program(&key.source, ctx, key.xmlid.clone(), viewid, name)?);
         let mut cache = self.by_source.write().unwrap();
         if cache.len() >= self.max_entries {
             cache.clear();
@@ -140,16 +177,22 @@ impl<H: Host> Engine<H> {
     /// Get (load and compile if needed) the program for a template reference.
     pub fn program(&self, template: &TemplateRef, ctx: &H::Context) -> Result<Arc<Program<H>>> {
         let opts = self.host.compile_options(ctx);
-        if self.trust_names {
-            if let Some(p) = self.by_name.read().unwrap().get(&(template.clone(), opts.clone())) {
-                return Ok(p.clone());
-            }
+        if self.trust_names
+            && let Some(p) = self
+                .by_name
+                .read()
+                .unwrap()
+                .get(&(template.clone(), opts.clone()))
+        {
+            return Ok(p.clone());
         }
         let program = match self.host.load(template, ctx)? {
             Loaded::Program(p) => p,
-            Loaded::Source { source, viewid, xmlid } => {
-                self.compile_cached(source, ctx, xmlid, viewid, &template.to_string())?
-            }
+            Loaded::Source {
+                source,
+                viewid,
+                xmlid,
+            } => self.compile_cached(source, ctx, xmlid, viewid, &template.to_string())?,
         };
         if self.trust_names {
             let mut cache = self.by_name.write().unwrap();
@@ -166,7 +209,11 @@ impl<H: Host> Engine<H> {
 // Lazy content (QwebContent)
 // ---------------------------------------------------------------------------
 
-/// A template fragment rendered on demand (`t-set` body, `t-call` body).
+/// A template fragment rendered on demand (`t-set` body, `t-call` body): the
+/// engine side of Python's `QwebContent`.
+///
+/// It keeps a snapshot of the scope taken when it was created. The first
+/// rendering is cached, later outputs reuse it.
 pub struct Lazy<H: Host> {
     engine: Arc<Engine<H>>,
     program: Arc<Program<H>>,
@@ -185,15 +232,23 @@ impl<H: Host> Lazy<H> {
             return Ok(h);
         }
         let mut out = String::new();
-        let mut r = Renderer { engine: &self.engine, h: &self.engine.host, depth: 1, memo: Vec::new() };
-        r.render_lazy_body(self, &mut out).map_err(|e| e.with_frame(err_frame(&self.program, &self.loc)))?;
+        let mut r = Renderer {
+            engine: &self.engine,
+            h: &self.engine.host,
+            depth: 1,
+            memo: Vec::new(),
+        };
+        r.render_lazy_body(self, &mut out)
+            .map_err(|e| e.with_frame(err_frame(&self.program, &self.loc)))?;
         Ok(self.html.get_or_init(|| out))
     }
 
+    /// The host.
     pub fn host(&self) -> &H {
         &self.engine.host
     }
 
+    /// Whether the content was rendered already.
     pub fn is_rendered(&self) -> bool {
         self.html.get().is_some()
     }
@@ -203,9 +258,13 @@ impl<H: Host> Lazy<H> {
 // Attributes
 // ---------------------------------------------------------------------------
 
+/// Value of a dynamic attribute, as given to [`Host::post_processing_att`].
 pub enum AttrVal<H: Host> {
+    /// Static attribute value.
     Static(Arc<str>),
+    /// Rendered format string (`t-attf-*`).
     Text(String),
+    /// Expression result (`t-att-*`, `t-att`, field/widget attributes).
     Value(H::Value),
 }
 
@@ -221,13 +280,15 @@ impl<H: Host> Clone for AttrVal<H> {
 
 /// Ordered attribute dict (Python dict semantics: a later value for an
 /// existing name replaces it in place).
-pub struct AttrMap<H: Host> {
-    pub items: Vec<(Arc<str>, AttrVal<H>)>,
+pub(crate) struct AttrMap<H: Host> {
+    items: Vec<(Arc<str>, AttrVal<H>)>,
 }
 
 impl<H: Host> Clone for AttrMap<H> {
     fn clone(&self) -> Self {
-        AttrMap { items: self.items.clone() }
+        AttrMap {
+            items: self.items.clone(),
+        }
     }
 }
 
@@ -256,7 +317,8 @@ struct Frame<H: Host> {
     ctx: H::Context,
 }
 
-pub struct Renderer<'e, H: Host> {
+/// State of one rendering (one call of [`Engine::render`] or [`Lazy::render`]).
+struct Renderer<'e, H: Host> {
     engine: &'e Arc<Engine<H>>,
     h: &'e H,
     depth: usize,
@@ -275,7 +337,11 @@ fn err_frame<H: Host>(prog: &Program<H>, loc: &Loc) -> crate::Frame {
 
 /// Set the error location (innermost element) if not set yet.
 fn locate<H: Host>(err: Error, prog: &Program<H>, loc: &Loc) -> Error {
-    if err.has_location() { err } else { err.with_location(err_frame(prog, loc)) }
+    if err.has_location() {
+        err
+    } else {
+        err.with_location(err_frame(prog, loc))
+    }
 }
 
 impl<'e, H: Host> Renderer<'e, H> {
@@ -283,12 +349,20 @@ impl<'e, H: Host> Renderer<'e, H> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             self.depth -= 1;
-            return Err(Error::new(ErrorKind::Recursion("Qweb template infinite recursion".into())));
+            return Err(Error::new(ErrorKind::Recursion(
+                "Qweb template infinite recursion".into(),
+            )));
         }
         Ok(())
     }
 
-    fn render_template(&mut self, template: &TemplateRef, scope: H::Scope, ctx: H::Context, out: &mut String) -> Result<()> {
+    fn render_template(
+        &mut self,
+        template: &TemplateRef,
+        scope: H::Scope,
+        ctx: H::Context,
+        out: &mut String,
+    ) -> Result<()> {
         self.push_depth()?;
         let res = match self.program(template, &ctx) {
             Ok(program) => self.run_program(&program, scope, ctx, out),
@@ -300,7 +374,11 @@ impl<'e, H: Host> Renderer<'e, H> {
 
     fn program(&mut self, template: &TemplateRef, ctx: &H::Context) -> Result<Arc<Program<H>>> {
         let opts = self.h.compile_options(ctx);
-        if let Some((_, _, p)) = self.memo.iter().find(|(t, o, _)| t == template && *o == opts) {
+        if let Some((_, _, p)) = self
+            .memo
+            .iter()
+            .find(|(t, o, _)| t == template && *o == opts)
+        {
             return Ok(p.clone());
         }
         let p = self.engine.program(template, ctx)?;
@@ -310,20 +388,40 @@ impl<'e, H: Host> Renderer<'e, H> {
         Ok(p)
     }
 
-    fn run_program(&mut self, program: &Arc<Program<H>>, mut scope: H::Scope, ctx: H::Context, out: &mut String) -> Result<()> {
+    fn run_program(
+        &mut self,
+        program: &Arc<Program<H>>,
+        mut scope: H::Scope,
+        ctx: H::Context,
+        out: &mut String,
+    ) -> Result<()> {
         let h = self.h;
         if !h.scope_contains(&scope, &program.xmlid_key) {
             h.scope_set(&mut scope, &program.xmlid_key, program.xmlid.clone());
             h.scope_set(&mut scope, &program.viewid_key, program.viewid.clone());
         }
-        let mut frame = Frame { scope, attrs: None, options: None, ctx };
+        let mut frame = Frame {
+            scope,
+            attrs: None,
+            options: None,
+            ctx,
+        };
         self.run(program, &program.blocks[program.main], &mut frame, out)
     }
 
     fn render_lazy_body(&mut self, lazy: &Lazy<H>, out: &mut String) -> Result<()> {
-        let mut frame =
-            Frame { scope: self.h.scope_copy(&lazy.scope), attrs: None, options: None, ctx: lazy.ctx.clone() };
-        self.run(&lazy.program, &lazy.program.blocks[lazy.block], &mut frame, out)
+        let mut frame = Frame {
+            scope: self.h.scope_copy(&lazy.scope),
+            attrs: None,
+            options: None,
+            ctx: lazy.ctx.clone(),
+        };
+        self.run(
+            &lazy.program,
+            &lazy.program.blocks[lazy.block],
+            &mut frame,
+            out,
+        )
     }
 
     fn render_lazy(&mut self, lazy: &Lazy<H>, out: &mut String) -> Result<()> {
@@ -340,7 +438,14 @@ impl<'e, H: Host> Renderer<'e, H> {
         Ok(())
     }
 
-    fn make_lazy(&self, program: &Arc<Program<H>>, block: usize, loc: &Loc, scope: &H::Scope, ctx: &H::Context) -> H::Value {
+    fn make_lazy(
+        &self,
+        program: &Arc<Program<H>>,
+        block: usize,
+        loc: &Loc,
+        scope: &H::Scope,
+        ctx: &H::Context,
+    ) -> H::Value {
         let lazy = Lazy {
             engine: self.engine.clone(),
             program: program.clone(),
@@ -353,13 +458,26 @@ impl<'e, H: Host> Renderer<'e, H> {
         self.h.wrap_lazy(Arc::new(lazy))
     }
 
-    fn run(&mut self, prog: &Arc<Program<H>>, stmts: &[Stmt<H>], frame: &mut Frame<H>, out: &mut String) -> Result<()> {
+    fn run(
+        &mut self,
+        prog: &Arc<Program<H>>,
+        stmts: &[Stmt<H>],
+        frame: &mut Frame<H>,
+        out: &mut String,
+    ) -> Result<()> {
         let h = self.h;
         for stmt in stmts {
             match stmt {
                 Stmt::Text(s) => out.push_str(s),
-                Stmt::If { cond, then, orelse, loc } => {
-                    let v = self.eval(cond, &frame.scope).map_err(|e| locate(e, prog, loc))?;
+                Stmt::If {
+                    cond,
+                    then,
+                    orelse,
+                    loc,
+                } => {
+                    let v = self
+                        .eval(cond, &frame.scope)
+                        .map_err(|e| locate(e, prog, loc))?;
                     let t = h.truthy(&v).map_err(|e| locate(e, prog, loc))?;
                     self.run(prog, if t { then } else { orelse }, frame, out)?;
                 }
@@ -370,22 +488,34 @@ impl<'e, H: Host> Renderer<'e, H> {
                 }
                 Stmt::Foreach(f) => self.run_foreach(prog, f, frame, out)?,
                 Stmt::Set { key, value, loc } => {
-                    let v = self.eval(value, &frame.scope).map_err(|e| locate(e, prog, loc))?;
+                    let v = self
+                        .eval(value, &frame.scope)
+                        .map_err(|e| locate(e, prog, loc))?;
                     h.scope_set(&mut frame.scope, key, v);
                 }
-                Stmt::SetFormat { key, fmt, markup, loc } => {
+                Stmt::SetFormat {
+                    key,
+                    fmt,
+                    markup,
+                    loc,
+                } => {
                     let v = match (fmt, markup) {
                         (Format::Const(v), false) => v.clone(),
                         _ => {
-                            let s = self.format_string(fmt, &frame.scope).map_err(|e| locate(e, prog, loc))?;
+                            let s = self
+                                .format_string(fmt, &frame.scope)
+                                .map_err(|e| locate(e, prog, loc))?;
                             if *markup { h.markup(&s) } else { h.str(&s) }
                         }
                     };
                     h.scope_set(&mut frame.scope, key, v);
                 }
                 Stmt::SetUpdate { value, loc } => {
-                    let v = self.eval(value, &frame.scope).map_err(|e| locate(e, prog, loc))?;
-                    h.scope_update_value(&mut frame.scope, &v).map_err(|e| locate(e, prog, loc))?;
+                    let v = self
+                        .eval(value, &frame.scope)
+                        .map_err(|e| locate(e, prog, loc))?;
+                    h.scope_update_value(&mut frame.scope, &v)
+                        .map_err(|e| locate(e, prog, loc))?;
                 }
                 Stmt::SetLazy { key, block, loc } => {
                     let v = self.make_lazy(prog, *block, loc, &frame.scope, &frame.ctx);
@@ -414,16 +544,25 @@ impl<'e, H: Host> Renderer<'e, H> {
                 Stmt::AttrSet { name, value, loc } => {
                     let v = match value {
                         AttrSrc::Static(s) => AttrVal::Static(s.clone()),
-                        AttrSrc::Expr(e) => AttrVal::Value(self.eval(e, &frame.scope).map_err(|e| locate(e, prog, loc))?),
+                        AttrSrc::Expr(e) => AttrVal::Value(
+                            self.eval(e, &frame.scope)
+                                .map_err(|e| locate(e, prog, loc))?,
+                        ),
                         AttrSrc::Format(Format::Const(v)) => AttrVal::Value(v.clone()),
-                        AttrSrc::Format(f) => {
-                            AttrVal::Text(self.format_string(f, &frame.scope).map_err(|e| locate(e, prog, loc))?)
-                        }
+                        AttrSrc::Format(f) => AttrVal::Text(
+                            self.format_string(f, &frame.scope)
+                                .map_err(|e| locate(e, prog, loc))?,
+                        ),
                     };
-                    frame.attrs.get_or_insert_with(AttrMap::new).set(name.clone(), v);
+                    frame
+                        .attrs
+                        .get_or_insert_with(AttrMap::new)
+                        .set(name.clone(), v);
                 }
                 Stmt::AttrUpdate { value, loc } => {
-                    let v = self.eval(value, &frame.scope).map_err(|e| locate(e, prog, loc))?;
+                    let v = self
+                        .eval(value, &frame.scope)
+                        .map_err(|e| locate(e, prog, loc))?;
                     if let Some(pairs) = h.pairs(&v).map_err(|e| locate(e, prog, loc))? {
                         let attrs = frame.attrs.get_or_insert_with(AttrMap::new);
                         for (k, val) in pairs {
@@ -442,12 +581,15 @@ impl<'e, H: Host> Renderer<'e, H> {
                         }
                     }
                 }
-                Stmt::Out(o) => self.run_out(prog, o, frame, out).map_err(|e| locate(e, prog, &o.loc))?,
+                Stmt::Out(o) => self
+                    .run_out(prog, o, frame, out)
+                    .map_err(|e| locate(e, prog, &o.loc))?,
                 Stmt::Slot { loc } => {
                     let v = h.scope_get(&frame.scope, &h.slot_key());
                     if let Some(v) = v {
                         if let Some(lazy) = h.as_lazy(&v) {
-                            self.render_lazy(&lazy, out).map_err(|e| e.with_frame(err_frame(prog, loc)))?;
+                            self.render_lazy(&lazy, out)
+                                .map_err(|e| e.with_frame(err_frame(prog, loc)))?;
                         } else {
                             h.write_text(&v, out)?;
                         }
@@ -455,22 +597,32 @@ impl<'e, H: Host> Renderer<'e, H> {
                 }
                 Stmt::Call(c) => self.run_call(prog, c, frame, out)?,
                 Stmt::Assets(a) => self.run_assets(a, frame, out)?,
-                Stmt::Hook { hook, loc } => {
-                    h.run_hook(&frame.ctx, hook, &frame.scope, out).map_err(|e| locate(e, prog, loc))?
-                }
+                Stmt::Hook { hook, loc } => h
+                    .run_hook(&frame.ctx, hook, &frame.scope, out)
+                    .map_err(|e| locate(e, prog, loc))?,
             }
         }
         Ok(())
     }
 
-    fn run_foreach(&mut self, prog: &Arc<Program<H>>, f: &Foreach<H>, frame: &mut Frame<H>, out: &mut String) -> Result<()> {
+    fn run_foreach(
+        &mut self,
+        prog: &Arc<Program<H>>,
+        f: &Foreach<H>,
+        frame: &mut Frame<H>,
+        out: &mut String,
+    ) -> Result<()> {
         let h = self.h;
         let loc_err = |e: Error| locate(e, prog, &f.loc);
         let src = match &f.source {
             Err(n) => h.iterate(h.int(*n)).map_err(loc_err)?,
             Ok(e) => {
                 let v = self.eval(e, &frame.scope).map_err(loc_err)?;
-                let v = if h.truthy(&v).map_err(loc_err)? { v } else { h.list(Vec::new()) };
+                let v = if h.truthy(&v).map_err(loc_err)? {
+                    v
+                } else {
+                    h.list(Vec::new())
+                };
                 h.iterate(v).map_err(loc_err)?
             }
         };
@@ -498,28 +650,57 @@ impl<'e, H: Host> Renderer<'e, H> {
             let odd = index % 2 == 1;
             h.scope_set(scope, &f.odd, h.int((index % 2) as i64));
             h.scope_set(scope, &f.even, h.bool(!odd));
-            h.scope_set(scope, &f.parity, if odd { f.parity_odd.clone() } else { f.parity_even.clone() });
+            h.scope_set(
+                scope,
+                &f.parity,
+                if odd {
+                    f.parity_odd.clone()
+                } else {
+                    f.parity_even.clone()
+                },
+            );
             self.run(prog, &f.body, frame, out)?;
             frame.attrs = None;
         }
         Ok(())
     }
 
-    fn run_out(&mut self, prog: &Arc<Program<H>>, o: &Out<H>, frame: &mut Frame<H>, out: &mut String) -> Result<()> {
+    fn run_out(
+        &mut self,
+        prog: &Arc<Program<H>>,
+        o: &Out<H>,
+        frame: &mut Frame<H>,
+        out: &mut String,
+    ) -> Result<()> {
         let h = self.h;
         let mut content = match &o.content {
             OutContent::Expr(e) => self.eval(e, &frame.scope)?,
-            OutContent::Slot => h.scope_get(&frame.scope, &h.slot_key()).unwrap_or_else(|| h.str("")),
+            OutContent::Slot => h
+                .scope_get(&frame.scope, &h.slot_key())
+                .unwrap_or_else(|| h.str("")),
             OutContent::Field { record, .. } => self.eval(record, &frame.scope)?,
         };
         let mut force_display = false;
         if let Some(conv) = &o.convert {
             let options = frame.options.take().unwrap_or_else(|| h.empty_options());
             let r = match &o.content {
-                OutContent::Field { field, .. } => {
-                    h.get_field(&frame.ctx, &content, field, &conv.expression, &conv.tag, options, &frame.scope)?
-                }
-                _ => h.get_widget(&frame.ctx, &content, &conv.expression, &conv.tag, options, &frame.scope)?,
+                OutContent::Field { field, .. } => h.get_field(
+                    &frame.ctx,
+                    &content,
+                    field,
+                    &conv.expression,
+                    &conv.tag,
+                    options,
+                    &frame.scope,
+                )?,
+                _ => h.get_widget(
+                    &frame.ctx,
+                    &content,
+                    &conv.expression,
+                    &conv.tag,
+                    options,
+                    &frame.scope,
+                )?,
             };
             let mut new_attrs = AttrMap::new();
             for (k, v) in r.attrs {
@@ -544,7 +725,8 @@ impl<'e, H: Host> Renderer<'e, H> {
         if !h.is_none_or_false(&content) {
             self.run(prog, &o.tag_open, frame, out)?;
             if let Some(lazy) = h.as_lazy(&content) {
-                self.render_lazy(&lazy, out).map_err(|e| e.with_frame(err_frame(prog, &o.loc)))?;
+                self.render_lazy(&lazy, out)
+                    .map_err(|e| e.with_frame(err_frame(prog, &o.loc)))?;
             } else {
                 h.write_escaped(&content, out)?;
             }
@@ -570,12 +752,19 @@ impl<'e, H: Host> Renderer<'e, H> {
         Ok(())
     }
 
-    fn run_call(&mut self, prog: &Arc<Program<H>>, c: &Call<H>, frame: &mut Frame<H>, out: &mut String) -> Result<()> {
+    fn run_call(
+        &mut self,
+        prog: &Arc<Program<H>>,
+        c: &Call<H>,
+        frame: &mut Frame<H>,
+        out: &mut String,
+    ) -> Result<()> {
         let h = self.h;
         let loc_err = |e: Error| locate(e, prog, &c.loc);
         let options = frame.options.take();
         let ctx = if options.is_some() || c.nsmap.is_some() {
-            h.call_context(&frame.ctx, options.as_ref(), c.nsmap.as_ref()).map_err(loc_err)?
+            h.call_context(&frame.ctx, options.as_ref(), c.nsmap.as_ref())
+                .map_err(loc_err)?
         } else {
             frame.ctx.clone()
         };
@@ -607,14 +796,15 @@ impl<'e, H: Host> Renderer<'e, H> {
         }
         let target = match &c.target {
             CallTarget::Static(t) => t.clone(),
-            CallTarget::Dynamic { fmt, .. } => {
+            CallTarget::Dynamic(fmt) => {
                 let s = self.format_string(fmt, &frame.scope).map_err(loc_err)?;
-                template_ref(&s)
+                TemplateRef::parse(&s)
             }
         };
         let mut scope = h.scope_copy(&frame.scope);
         h.scope_update(&mut scope, &values);
-        self.render_template(&target, scope, ctx, out).map_err(|e| e.with_frame(err_frame(prog, &c.loc)))
+        self.render_template(&target, scope, ctx, out)
+            .map_err(|e| e.with_frame(err_frame(prog, &c.loc)))
     }
 
     fn run_assets(&mut self, a: &Assets, frame: &mut Frame<H>, out: &mut String) -> Result<()> {
@@ -657,7 +847,13 @@ impl<'e, H: Host> Renderer<'e, H> {
     }
 
     /// `_render_attributes` (with the base `_post_processing_att`).
-    fn render_attributes(&mut self, ctx: &H::Context, tag: &str, attrs: &mut AttrMap<H>, out: &mut String) -> Result<()> {
+    fn render_attributes(
+        &mut self,
+        ctx: &H::Context,
+        tag: &str,
+        attrs: &mut AttrMap<H>,
+        out: &mut String,
+    ) -> Result<()> {
         let h = self.h;
         if h.custom_post_processing(ctx) {
             let items = std::mem::take(&mut attrs.items);
@@ -750,7 +946,7 @@ impl<'e, H: Host> Renderer<'e, H> {
         }
     }
 
-    pub fn eval(&self, e: &Ex<H>, scope: &H::Scope) -> Result<H::Value> {
+    fn eval(&self, e: &Ex<H>, scope: &H::Scope) -> Result<H::Value> {
         let h = self.h;
         Ok(match e {
             Ex::Const(v) => v.clone(),
@@ -759,7 +955,9 @@ impl<'e, H: Host> Renderer<'e, H> {
                 None if *strict => return Err(h.missing_name(name)),
                 None => h.none(),
             },
-            Ex::Unknown(name) => return Err(Error::other(format!("name '{name}' is not defined"))),
+            Ex::Unknown(name) => {
+                return Err(Error::other(format!("name '{name}' is not defined")));
+            }
             Ex::Attr(o, name) => {
                 let o = self.eval(o, scope)?;
                 h.get_attr(&o, name)?
@@ -850,7 +1048,11 @@ impl<'e, H: Host> Renderer<'e, H> {
             }
             Ex::IfElse(c, t, o) => {
                 let c = self.eval(c, scope)?;
-                if h.truthy(&c)? { self.eval(t, scope)? } else { self.eval(o, scope)? }
+                if h.truthy(&c)? {
+                    self.eval(t, scope)?
+                } else {
+                    self.eval(o, scope)?
+                }
             }
             Ex::Tuple(items) => h.tuple(self.eval_all(items, scope)?),
             Ex::List(items) => h.list(self.eval_all(items, scope)?),
@@ -875,11 +1077,4 @@ impl<'e, H: Host> Renderer<'e, H> {
         }
         Ok(v)
     }
-}
-
-/// Hash helper used by hosts that want stable source keys.
-pub fn hash_str(s: &str) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    s.hash(&mut h);
-    h.finish()
 }

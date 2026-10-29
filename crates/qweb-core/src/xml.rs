@@ -6,25 +6,37 @@
 //! * literal tabs/newlines in attribute values become spaces;
 //! * namespaced tags and attributes use the `{uri}local` notation, `nsmap`
 //!   holds every namespace in scope (own declarations first, then ancestors).
+//!
+//! Nodes live in an arena ([`Document::nodes`]) and refer to each other by
+//! index. Detached nodes stay in the arena.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
+/// Index of a node in [`Document::nodes`].
 pub type NodeId = usize;
 
+/// The namespace bound to the `xml` prefix.
 pub const XML_NS: &str = "http://www.w3.org/XML/1998/namespace";
 
+/// Kind of a [`Node`]. Text is not a node: it is stored in `text` / `tail`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
+    /// Element.
     Element,
+    /// Comment (`<!--text-->`).
     Comment,
+    /// Processing instruction (`<?tag text?>`).
     Pi,
 }
 
 /// In-scope namespace map, `(prefix, uri)`; `None` is the default namespace.
 pub type NsMap = Arc<Vec<(Option<String>, String)>>;
 
-#[derive(Debug, Clone)]
+/// A node of a [`Document`].
+#[derive(Clone)]
 pub struct Node {
+    /// Node kind.
     pub kind: NodeKind,
     /// Element: lxml-style tag (`{uri}local` or `local`). PI: target. Comment: empty.
     pub tag: String,
@@ -32,25 +44,36 @@ pub struct Node {
     pub prefix: Option<String>,
     /// Attributes in source order, names in lxml notation.
     pub attrs: Vec<(String, String)>,
+    /// Namespaces in scope. Shared with the parent (same `Arc`) when the
+    /// element declares none.
     pub nsmap: NsMap,
     /// Element text, comment text or PI text.
     pub text: Option<String>,
+    /// Text after the node, up to the next sibling or the parent's end.
     pub tail: Option<String>,
+    /// Child nodes, in document order.
     pub children: Vec<NodeId>,
+    /// Parent element; `None` for the root and detached nodes.
     pub parent: Option<NodeId>,
     /// Line number of the node start (1-based) for error messages.
     pub line: u32,
 }
 
 impl Node {
+    /// Tag without its namespace.
     pub fn local_name(&self) -> &str {
         local_name(&self.tag)
     }
 
+    /// Attribute value (lxml `get`).
     pub fn get(&self, name: &str) -> Option<&str> {
-        self.attrs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+        self.attrs
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
     }
 
+    /// Whether the attribute exists.
     pub fn has(&self, name: &str) -> bool {
         self.attrs.iter().any(|(k, _)| k == name)
     }
@@ -58,6 +81,7 @@ impl Node {
     /// Like lxml `attrib.pop(name)`.
     pub fn pop(&mut self, name: &str) -> Option<String> {
         let idx = self.attrs.iter().position(|(k, _)| k == name)?;
+        // Not `swap_remove`: attribute order is output order.
         Some(self.attrs.remove(idx).1)
     }
 
@@ -72,42 +96,57 @@ impl Node {
     }
 }
 
-pub fn local_name(tag: &str) -> &str {
-    if tag.starts_with('{') {
-        match tag.find('}') {
-            Some(i) => &tag[i + 1..],
-            None => tag,
-        }
-    } else {
-        tag
+/// Split an lxml-style name into its namespace URI (if any) and local name.
+///
+/// ```
+/// use qweb_core::xml::split_name;
+/// assert_eq!(split_name("{http://x}a"), (Some("http://x"), "a"));
+/// assert_eq!(split_name("a"), (None, "a"));
+/// ```
+#[inline]
+pub fn split_name(name: &str) -> (Option<&str>, &str) {
+    if let Some(rest) = name.strip_prefix('{')
+        && let Some(i) = rest.find('}')
+    {
+        return (Some(&rest[..i]), &rest[i + 1..]);
     }
+    (None, name)
+}
+
+/// Local name of an lxml-style name (`{uri}local` or `local`).
+#[inline]
+pub fn local_name(tag: &str) -> &str {
+    split_name(tag).1
 }
 
 /// Namespace URI of an lxml-style name, if any.
+#[inline]
 pub fn namespace(name: &str) -> Option<&str> {
-    if name.starts_with('{') {
-        name.find('}').map(|i| &name[1..i])
-    } else {
-        None
-    }
+    split_name(name).0
 }
 
-#[derive(Debug, Clone)]
+/// A parsed XML tree.
 pub struct Document {
+    /// Node arena; [`NodeId`]s index it.
     pub nodes: Vec<Node>,
+    /// Root element.
     pub root: NodeId,
 }
 
 impl Document {
+    /// Parse an XML document (like `etree.fromstring`); only the root element
+    /// is kept, the prolog and trailing comments/PIs are skipped.
     pub fn parse(src: &str) -> Result<Document, XmlError> {
         Parser::new(src).parse()
     }
 
+    /// A node.
     #[inline]
     pub fn node(&self, id: NodeId) -> &Node {
         &self.nodes[id]
     }
 
+    /// A node, mutably.
     #[inline]
     pub fn node_mut(&mut self, id: NodeId) -> &mut Node {
         &mut self.nodes[id]
@@ -121,9 +160,11 @@ impl Document {
         siblings.get(pos + 1).copied()
     }
 
+    /// Remove `child` from the children of `parent` (its tail goes with it).
     pub fn remove_child(&mut self, parent: NodeId, child: NodeId) {
         let children = &mut self.nodes[parent].children;
         if let Some(pos) = children.iter().position(|&c| c == child) {
+            // Not `swap_remove`: children are in document order.
             children.remove(pos);
         }
         self.nodes[child].parent = None;
@@ -209,12 +250,19 @@ impl Document {
         self.add_sibling(target, new, 1)
     }
 
-    fn add_sibling(&mut self, target: NodeId, new: NodeId, offset: usize) -> Result<(), &'static str> {
+    fn add_sibling(
+        &mut self,
+        target: NodeId,
+        new: NodeId,
+        offset: usize,
+    ) -> Result<(), &'static str> {
         if new == target {
             return Ok(());
         }
         let Some(_) = self.nodes[target].parent else {
-            return Err("Only processing instructions and comments can be siblings of the root element");
+            return Err(
+                "Only processing instructions and comments can be siblings of the root element",
+            );
         };
         let mut cur = Some(target);
         while let Some(c) = cur {
@@ -307,8 +355,13 @@ impl Document {
                 let name = qualified(&node.tag, node.prefix.as_deref(), &node.nsmap, true);
                 out.push('<');
                 out.push_str(&name);
-                for (prefix, uri) in node.nsmap.iter() {
-                    let inherited = parent_ns.is_some_and(|p| p.iter().any(|(q, u)| q == prefix && u == uri));
+                // Declare the namespaces not declared by an ancestor. Elements
+                // without declarations share their parent's map (fast path);
+                // otherwise both maps hold a handful of entries.
+                let same_as_parent = parent_ns.is_some_and(|p| Arc::ptr_eq(p, &node.nsmap));
+                for (prefix, uri) in node.nsmap.iter().filter(|_| !same_as_parent) {
+                    let inherited =
+                        parent_ns.is_some_and(|p| p.iter().any(|(q, u)| q == prefix && u == uri));
                     if inherited {
                         continue;
                     }
@@ -397,7 +450,9 @@ impl Document {
                     let same: Vec<_> = self.nodes[p]
                         .children
                         .iter()
-                        .filter(|&&s| self.nodes[s].kind == node.kind && self.nodes[s].tag == node.tag)
+                        .filter(|&&s| {
+                            self.nodes[s].kind == node.kind && self.nodes[s].tag == node.tag
+                        })
                         .collect();
                     if same.len() > 1 {
                         let idx = same.iter().position(|&&s| s == c).unwrap_or(0) + 1;
@@ -442,24 +497,32 @@ impl Document {
 }
 
 /// `prefix:local` name of an lxml-style `{uri}local` name, for serialization.
-fn qualified(name: &str, prefix: Option<&str>, nsmap: &NsMap, element: bool) -> String {
-    let Some(uri) = namespace(name) else { return name.to_owned() };
-    let local = local_name(name);
+fn qualified<'a>(
+    name: &'a str,
+    prefix: Option<&str>,
+    nsmap: &NsMap,
+    element: bool,
+) -> Cow<'a, str> {
+    let (Some(uri), local) = split_name(name) else {
+        return Cow::Borrowed(name);
+    };
     if uri == XML_NS {
-        return format!("xml:{local}");
+        return format!("xml:{local}").into();
     }
     if let Some(p) = prefix
-        && nsmap.iter().any(|(q, u)| q.as_deref() == Some(p) && u == uri)
+        && nsmap
+            .iter()
+            .any(|(q, u)| q.as_deref() == Some(p) && u == uri)
     {
-        return format!("{p}:{local}");
+        return format!("{p}:{local}").into();
     }
     // attributes cannot use the default namespace
     if element && nsmap.iter().any(|(q, u)| q.is_none() && u == uri) {
-        return local.to_owned();
+        return Cow::Borrowed(local);
     }
     match nsmap.iter().find(|(q, u)| q.is_some() && u == uri) {
-        Some((Some(p), _)) => format!("{p}:{local}"),
-        _ => local.to_owned(),
+        Some((Some(p), _)) => format!("{p}:{local}").into(),
+        _ => Cow::Borrowed(local),
     }
 }
 
@@ -502,9 +565,12 @@ pub fn escape_xml_attr(s: &str, out: &mut String) {
     out.push_str(&s[last..]);
 }
 
-#[derive(Debug, Clone)]
+/// XML syntax error.
+#[derive(Debug)]
 pub struct XmlError {
+    /// Description (libxml2-like).
     pub message: String,
+    /// Line (1-based).
     pub line: u32,
 }
 
@@ -520,7 +586,9 @@ struct Parser<'a> {
     src: &'a str,
     b: &'a [u8],
     pos: usize,
+    /// Line number at `line_pos`, advanced lazily by [`Parser::node_line`].
     line: u32,
+    line_pos: usize,
     nodes: Vec<Node>,
 }
 
@@ -530,23 +598,45 @@ fn is_name_end(b: u8) -> bool {
 
 impl<'a> Parser<'a> {
     fn new(src: &'a str) -> Self {
-        Parser { src, b: src.as_bytes(), pos: 0, line: 1, nodes: Vec::new() }
+        Parser {
+            src,
+            b: src.as_bytes(),
+            pos: 0,
+            line: 1,
+            line_pos: 0,
+            nodes: Vec::new(),
+        }
     }
 
+    /// Line of the current position, counted from the start (for errors).
+    fn error_line(&self) -> u32 {
+        1 + memchr::memchr_iter(b'\n', &self.b[..self.pos]).count() as u32
+    }
+
+    /// Line of the current position. Lines are counted from the previous
+    /// call, so a whole parse scans the input once.
+    fn node_line(&mut self) -> u32 {
+        let skipped = &self.b[self.line_pos..self.pos];
+        self.line += memchr::memchr_iter(b'\n', skipped).count() as u32;
+        self.line_pos = self.pos;
+        self.line
+    }
+
+    #[cold]
     fn err<T>(&self, msg: impl Into<String>) -> Result<T, XmlError> {
-        Err(XmlError { message: msg.into(), line: self.line })
+        Err(XmlError {
+            message: msg.into(),
+            line: self.error_line(),
+        })
     }
 
+    #[inline]
     fn starts_with(&self, s: &str) -> bool {
         self.b[self.pos..].starts_with(s.as_bytes())
     }
 
+    #[inline]
     fn advance(&mut self, n: usize) {
-        for &c in &self.b[self.pos..self.pos + n] {
-            if c == b'\n' {
-                self.line += 1;
-            }
-        }
         self.pos += n;
     }
 
@@ -576,10 +666,16 @@ impl<'a> Parser<'a> {
         loop {
             self.skip_ws();
             if self.starts_with("<?") {
-                let end = self.find("?>").ok_or(XmlError { message: "unterminated PI".into(), line: self.line })?;
+                let end = self.find("?>").ok_or_else(|| XmlError {
+                    message: "unterminated PI".into(),
+                    line: self.error_line(),
+                })?;
                 self.advance(end + 2 - self.pos);
             } else if self.starts_with("<!--") {
-                let end = self.find("-->").ok_or(XmlError { message: "unterminated comment".into(), line: self.line })?;
+                let end = self.find("-->").ok_or_else(|| XmlError {
+                    message: "unterminated comment".into(),
+                    line: self.error_line(),
+                })?;
                 self.advance(end + 3 - self.pos);
             } else if self.starts_with("<!DOCTYPE") {
                 self.skip_doctype()?;
@@ -593,7 +689,10 @@ impl<'a> Parser<'a> {
         let root_ns: NsMap = Arc::new(Vec::new());
         let root = self.parse_element(None, &root_ns)?;
         // Trailing misc is ignored (like lxml.fromstring, which only returns the root).
-        Ok(Document { nodes: self.nodes, root })
+        Ok(Document {
+            nodes: self.nodes,
+            root,
+        })
     }
 
     fn skip_doctype(&mut self) -> Result<(), XmlError> {
@@ -612,6 +711,7 @@ impl<'a> Parser<'a> {
     }
 
     fn new_node(&mut self, kind: NodeKind, parent: Option<NodeId>, nsmap: NsMap) -> NodeId {
+        let line = self.node_line();
         self.nodes.push(Node {
             kind,
             tag: String::new(),
@@ -622,13 +722,17 @@ impl<'a> Parser<'a> {
             tail: None,
             children: Vec::new(),
             parent,
-            line: self.line,
+            line,
         });
         self.nodes.len() - 1
     }
 
-    fn parse_element(&mut self, parent: Option<NodeId>, parent_ns: &NsMap) -> Result<NodeId, XmlError> {
-        let line = self.line;
+    fn parse_element(
+        &mut self,
+        parent: Option<NodeId>,
+        parent_ns: &NsMap,
+    ) -> Result<NodeId, XmlError> {
+        let line = self.node_line();
         self.advance(1); // '<'
         let qname = self.read_name()?;
         // Raw attributes first: namespace declarations must be known before
@@ -690,7 +794,10 @@ impl<'a> Parser<'a> {
                     Some((_, u)) => Ok(Some(u.clone())),
                     None => this.err(format!("Namespace prefix {p} is not defined")),
                 },
-                None => Ok(nsmap.iter().find(|(q, _)| q.is_none()).map(|(_, u)| u.clone())),
+                None => Ok(nsmap
+                    .iter()
+                    .find(|(q, _)| q.is_none())
+                    .map(|(_, u)| u.clone())),
             }
         };
 
@@ -758,7 +865,9 @@ impl<'a> Parser<'a> {
                     self.advance(2);
                     let name = self.read_name()?;
                     if name != qname {
-                        return self.err(format!("Opening and ending tag mismatch: {qname} and {name}"));
+                        return self.err(format!(
+                            "Opening and ending tag mismatch: {qname} and {name}"
+                        ));
                     }
                     self.skip_ws();
                     if self.pos >= self.b.len() || self.b[self.pos] != b'>' {
@@ -769,21 +878,31 @@ impl<'a> Parser<'a> {
                     return Ok(id);
                 } else if self.starts_with("<!--") {
                     flush_text!();
-                    let end = self.find("-->").ok_or(XmlError { message: "Comment not terminated".into(), line: self.line })?;
-                    let body = normalize_newlines(&self.src[self.pos + 4..end]);
+                    let end = self.find("-->").ok_or_else(|| XmlError {
+                        message: "Comment not terminated".into(),
+                        line: self.error_line(),
+                    })?;
+                    let mut body = String::new();
+                    normalize_newlines(&self.src[self.pos + 4..end], &mut body);
                     let c = self.new_node(NodeKind::Comment, Some(id), nsmap.clone());
                     self.nodes[c].text = Some(body);
                     self.nodes[id].children.push(c);
                     self.advance(end + 3 - self.pos);
                     last_child = Some(c);
                 } else if self.starts_with("<![CDATA[") {
-                    let end = self.find("]]>").ok_or(XmlError { message: "CData section not finished".into(), line: self.line })?;
-                    text.push_str(&normalize_newlines(&self.src[self.pos + 9..end]));
+                    let end = self.find("]]>").ok_or_else(|| XmlError {
+                        message: "CData section not finished".into(),
+                        line: self.error_line(),
+                    })?;
+                    normalize_newlines(&self.src[self.pos + 9..end], &mut text);
                     has_text = true;
                     self.advance(end + 3 - self.pos);
                 } else if self.starts_with("<?") {
                     flush_text!();
-                    let end = self.find("?>").ok_or(XmlError { message: "PI not terminated".into(), line: self.line })?;
+                    let end = self.find("?>").ok_or_else(|| XmlError {
+                        message: "PI not terminated".into(),
+                        line: self.error_line(),
+                    })?;
                     let body = &self.src[self.pos + 2..end];
                     let (target, rest) = match body.find(|c: char| c.is_ascii_whitespace()) {
                         Some(i) => (&body[..i], body[i..].trim_start()),
@@ -791,7 +910,9 @@ impl<'a> Parser<'a> {
                     };
                     let c = self.new_node(NodeKind::Pi, Some(id), nsmap.clone());
                     self.nodes[c].tag = target.to_owned();
-                    self.nodes[c].text = Some(normalize_newlines(rest));
+                    let mut text = String::new();
+                    normalize_newlines(rest, &mut text);
+                    self.nodes[c].text = Some(text);
                     self.nodes[id].children.push(c);
                     self.advance(end + 2 - self.pos);
                     last_child = Some(c);
@@ -801,9 +922,13 @@ impl<'a> Parser<'a> {
                     last_child = Some(c);
                 }
             } else {
-                let end = memchr::memchr(b'<', &self.b[self.pos..]).map_or(self.b.len(), |i| self.pos + i);
+                let end = memchr::memchr(b'<', &self.b[self.pos..])
+                    .map_or(self.b.len(), |i| self.pos + i);
                 let raw = &self.src[self.pos..end];
-                decode_text(raw, &mut text, false).map_err(|m| XmlError { message: m, line: self.line })?;
+                decode_text(raw, &mut text, false).map_err(|m| XmlError {
+                    message: m,
+                    line: self.error_line(),
+                })?;
                 has_text = true;
                 self.advance(end - self.pos);
             }
@@ -820,23 +945,35 @@ impl<'a> Parser<'a> {
         }
         let start = self.pos + 1;
         let end = memchr::memchr(q, &self.b[start..]).map(|i| start + i);
-        let Some(end) = end else { return self.err("AttValue: ' expected") };
+        let Some(end) = end else {
+            return self.err("AttValue: ' expected");
+        };
         let raw = &self.src[start..end];
         if raw.contains('<') {
             return self.err("Unescaped '<' not allowed in attributes values");
         }
         let mut out = String::with_capacity(raw.len());
-        decode_text(raw, &mut out, true).map_err(|m| XmlError { message: m, line: self.line })?;
+        decode_text(raw, &mut out, true).map_err(|m| XmlError {
+            message: m,
+            line: self.error_line(),
+        })?;
         self.advance(end + 1 - self.pos);
         Ok(out)
     }
 }
 
-fn normalize_newlines(s: &str) -> String {
-    if !s.contains('\r') {
-        return s.to_owned();
+/// Append `s` to `out` with `\r\n` and `\r` replaced by `\n`.
+fn normalize_newlines(s: &str, out: &mut String) {
+    let mut rest = s;
+    while let Some(i) = memchr::memchr(b'\r', rest.as_bytes()) {
+        out.push_str(&rest[..i]);
+        out.push('\n');
+        rest = &rest[i + 1..];
+        if let Some(r) = rest.strip_prefix('\n') {
+            rest = r;
+        }
     }
-    s.replace("\r\n", "\n").replace('\r', "\n")
+    out.push_str(rest);
 }
 
 /// Decode entities; `attr` additionally normalises literal whitespace to spaces.
@@ -848,7 +985,10 @@ fn decode_text(raw: &str, out: &mut String, attr: bool) -> Result<(), String> {
         match b[i] {
             b'&' => {
                 out.push_str(&raw[start..i]);
-                let semi = raw[i..].find(';').ok_or_else(|| "EntityRef: expecting ';'".to_owned())? + i;
+                let semi = raw[i..]
+                    .find(';')
+                    .ok_or_else(|| "EntityRef: expecting ';'".to_owned())?
+                    + i;
                 let ent = &raw[i + 1..semi];
                 match ent {
                     "lt" => out.push('<'),
@@ -857,12 +997,21 @@ fn decode_text(raw: &str, out: &mut String, attr: bool) -> Result<(), String> {
                     "quot" => out.push('"'),
                     "apos" => out.push('\''),
                     _ if ent.starts_with("#x") || ent.starts_with("#X") => {
-                        let cp = u32::from_str_radix(&ent[2..], 16).map_err(|_| format!("invalid char ref &{ent};"))?;
-                        out.push(char::from_u32(cp).ok_or_else(|| format!("invalid char ref &{ent};"))?);
+                        let cp = u32::from_str_radix(&ent[2..], 16)
+                            .map_err(|_| format!("invalid char ref &{ent};"))?;
+                        out.push(
+                            char::from_u32(cp)
+                                .ok_or_else(|| format!("invalid char ref &{ent};"))?,
+                        );
                     }
                     _ if ent.starts_with('#') => {
-                        let cp: u32 = ent[1..].parse().map_err(|_| format!("invalid char ref &{ent};"))?;
-                        out.push(char::from_u32(cp).ok_or_else(|| format!("invalid char ref &{ent};"))?);
+                        let cp: u32 = ent[1..]
+                            .parse()
+                            .map_err(|_| format!("invalid char ref &{ent};"))?;
+                        out.push(
+                            char::from_u32(cp)
+                                .ok_or_else(|| format!("invalid char ref &{ent};"))?,
+                        );
                     }
                     _ => return Err(format!("Entity '{ent}' not defined")),
                 }
@@ -908,11 +1057,45 @@ mod tests {
 
     #[test]
     fn entities_and_attrs() {
-        let d = Document::parse("<a t=\"&#13;&#9;\r\n\" u='x\ny'>&amp;lt;<![CDATA[<&>]]>\r\n</a>").unwrap();
+        let d = Document::parse("<a t=\"&#13;&#9;\r\n\" u='x\ny'>&amp;lt;<![CDATA[<&>]]>\r\n</a>")
+            .unwrap();
         let a = d.node(d.root);
         assert_eq!(a.get("t"), Some("\r\t "));
         assert_eq!(a.get("u"), Some("x y"));
         assert_eq!(a.text.as_deref(), Some("&lt;<&>\n"));
+    }
+
+    #[test]
+    fn newlines() {
+        let mut out = String::new();
+        normalize_newlines("a\r\nb\rc\r\r\nd\r", &mut out);
+        assert_eq!(out, "a\nb\nc\n\nd\n");
+        let d = Document::parse("<a><!--x\r\ny--><?p a\rb?><![CDATA[1\r\n2]]></a>").unwrap();
+        let a = d.node(d.root);
+        assert_eq!(d.node(a.children[0]).text.as_deref(), Some("x\ny"));
+        assert_eq!(d.node(a.children[1]).text.as_deref(), Some("a\nb"));
+        assert_eq!(d.node(a.children[1]).tail.as_deref(), Some("1\n2"));
+        assert_eq!(d.node(a.children[0]).line, 1);
+    }
+
+    #[test]
+    fn lines() {
+        let d = Document::parse("<a>\n<b/>\n\n<c>\n</c><!--\n--><d/></a>").unwrap();
+        let a = d.node(d.root);
+        let line = |i: usize| d.node(a.children[i]).line;
+        assert_eq!(
+            (a.line, line(0), line(1), line(2), line(3)),
+            (1, 2, 4, 5, 6)
+        );
+        let e = Document::parse("<a>\n\n<b></a>").err().unwrap();
+        assert_eq!(e.line, 3);
+    }
+
+    #[test]
+    fn serialize_namespaces() {
+        let src = "<a xmlns:x=\"X\"><x:b><c x:k=\"1\"/></x:b><d xmlns:y=\"Y\"/></a>";
+        let d = Document::parse(src).unwrap();
+        assert_eq!(d.to_string(d.root, false), src);
     }
 
     #[test]
@@ -923,7 +1106,11 @@ mod tests {
         assert_eq!(b.prefix, None);
         assert_eq!(
             *b.nsmap,
-            vec![(Some("y".into()), "Y".into()), (Some("x".into()), "X".into()), (None, "D".into())]
+            vec![
+                (Some("y".into()), "Y".into()),
+                (Some("x".into()), "X".into()),
+                (None, "D".into())
+            ]
         );
         assert_eq!(b.attrs[0].0, "{X}k");
         assert_eq!(b.attrs[2].0, format!("{{{XML_NS}}}space"));
