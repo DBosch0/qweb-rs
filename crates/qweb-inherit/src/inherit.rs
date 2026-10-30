@@ -1,5 +1,7 @@
 //! Port of `odoo/tools/template_inheritance.py` (`apply_inheritance_specs`).
 
+use core::{error, fmt};
+
 use qweb_core::compile::py_repr_str as py_repr;
 use qweb_core::escape::escape as html_escape;
 use qweb_core::xml::{Document, NodeId, NodeKind};
@@ -36,13 +38,13 @@ pub struct InheritError {
     pub message: String,
 }
 
-impl std::fmt::Display for InheritError {
+impl fmt::Display for InheritError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
     }
 }
 
-impl std::error::Error for InheritError {}
+impl error::Error for InheritError {}
 
 fn value_err<T>(msg: String) -> Result<T, InheritError> {
     Err(InheritError {

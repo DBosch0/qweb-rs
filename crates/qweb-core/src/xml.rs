@@ -10,6 +10,7 @@
 //! Nodes live in an arena ([`Document::nodes`]) and refer to each other by
 //! index. Detached nodes stay in the arena.
 
+use core::{error, fmt};
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -591,13 +592,13 @@ pub struct XmlError {
     pub line: u32,
 }
 
-impl std::fmt::Display for XmlError {
+impl fmt::Display for XmlError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}, line {}", self.message, self.line)
     }
 }
 
-impl std::error::Error for XmlError {}
+impl error::Error for XmlError {}
 
 struct Parser<'a> {
     src: &'a str,

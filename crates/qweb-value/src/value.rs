@@ -1,7 +1,7 @@
 //! Python-like dynamic values.
 
-use std::cmp::Ordering;
-use std::fmt::Write as _;
+use core::cmp::Ordering;
+use core::fmt::{self, Write as _};
 use std::sync::Arc;
 
 use indexmap::IndexMap;
@@ -184,7 +184,7 @@ pub enum Value {
     Lazy(Arc<Lazy<ValueHost>>),
 }
 
-impl std::fmt::Debug for Value {
+impl fmt::Debug for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.repr())
     }

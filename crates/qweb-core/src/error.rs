@@ -5,7 +5,7 @@
 //! location information: the innermost element where it happened
 //! ([`Error::location`]) and the template call stack ([`Error::stack`]).
 
-use std::fmt;
+use core::{error, fmt, result};
 use std::sync::Arc;
 
 /// A position in a template: an element of a compiled template.
@@ -228,7 +228,7 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {
+impl error::Error for Error {
     /// The host error, for [`ErrorKind::Host`].
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.inner.kind {
@@ -239,4 +239,4 @@ impl std::error::Error for Error {
 }
 
 /// `Result` with [`Error`] as the error type.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = result::Result<T, Error>;

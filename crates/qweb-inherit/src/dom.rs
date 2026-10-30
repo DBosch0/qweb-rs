@@ -4,7 +4,7 @@
 //! Nodes live in an arena ([`Dom`]); a tree is referenced by its root id.
 //! Freed subtrees are recycled.
 
-use std::hash::Hash;
+use core::hash::Hash;
 
 use qweb_core::xml::{Document, NodeKind, XML_NS, local_name, namespace};
 

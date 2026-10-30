@@ -1,6 +1,6 @@
 //! Operators, builtins and methods with Python semantics.
 
-use std::cmp::Ordering;
+use core::cmp::Ordering;
 use std::sync::Arc;
 
 use qweb_core::expr::{BinOp, CmpOp, UnOp};

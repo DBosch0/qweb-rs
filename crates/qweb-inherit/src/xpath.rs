@@ -5,8 +5,8 @@
 //! lxml `ETXPath` names in Clark notation (`{uri}local`). Prefixed names and
 //! variables are not supported (Odoo has no namespace mapping for them).
 
+use core::{fmt, hash::Hash};
 use std::collections::HashMap;
-use std::hash::Hash;
 
 use qweb_core::xml::{Document, NodeId, NodeKind, local_name, namespace};
 
@@ -29,7 +29,7 @@ pub enum XNode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct XPathError(pub String);
 
-impl std::fmt::Display for XPathError {
+impl fmt::Display for XPathError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }

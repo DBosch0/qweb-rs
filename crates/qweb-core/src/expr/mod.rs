@@ -17,6 +17,8 @@
 
 mod lexer;
 
+use core::fmt;
+
 use lexer::{LexError, Tok};
 
 /// Names never looked up in the template values (`ALLOWED_KEYWORD` minus the
@@ -224,7 +226,7 @@ pub(crate) enum ParseError {
     Dunder(String),
 }
 
-impl std::fmt::Display for ParseError {
+impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ParseError::Unsupported(m) => write!(f, "unsupported expression: {m}"),
