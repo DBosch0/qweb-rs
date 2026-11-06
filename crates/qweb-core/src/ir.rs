@@ -8,11 +8,11 @@
 //! types ([`Host::Value`], [`Host::Key`], [`Host::Opaque`]), created once at
 //! compile time.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::expr::{BinOp, CmpOp, UnOp};
 use crate::host::{Host, TemplateRef};
-use crate::xml::NsMap;
+use crate::xml::{Document, NodeId, NsMap};
 
 /// Lowered expression, ready for evaluation by a host.
 ///
@@ -100,12 +100,79 @@ pub enum AttrSrc<H: Host> {
 }
 
 /// Location of the element a statement comes from (error reporting).
+///
+/// Usually just a node id: the text is built by [`Program::location`] only
+/// when an error is reported, from the template source parsed again.
 #[derive(Clone)]
-pub struct Loc {
+pub struct Loc(LocKind);
+
+#[derive(Clone)]
+enum LocKind {
+    /// Element of the template source, unchanged when it was recorded.
+    Node(NodeId),
+    /// Text built when recorded (element changed since parsing, or no source).
+    Text(Arc<LocText>),
+}
+
+/// Location text: XPath and start tag of an element.
+pub struct LocText {
     /// XPath of the element.
     pub path: Arc<str>,
     /// Start tag of the element, with its attributes before compilation.
     pub element: Arc<str>,
+}
+
+impl Loc {
+    /// Location of node `id` of the template source, as parsed.
+    pub(crate) fn node(id: NodeId) -> Self {
+        Loc(LocKind::Node(id))
+    }
+
+    /// Location of element `id` in its current state.
+    pub(crate) fn current(doc: &Document, id: NodeId) -> Self {
+        Loc(LocKind::Text(Arc::new(LocText {
+            path: Arc::from(doc.path(id)),
+            element: Arc::from(doc.start_tag_repr(id)),
+        })))
+    }
+}
+
+/// The template source, parsed again (once) to build location texts.
+pub(crate) struct LocSource {
+    source: Option<Arc<str>>,
+    doc: OnceLock<Option<Document>>,
+}
+
+impl LocSource {
+    pub(crate) fn new(source: Option<Arc<str>>) -> Self {
+        LocSource {
+            source,
+            doc: OnceLock::new(),
+        }
+    }
+
+    pub(crate) fn has_source(&self) -> bool {
+        self.source.is_some()
+    }
+
+    /// `(path, element)` of a location.
+    pub(crate) fn resolve(&self, loc: &Loc) -> (Arc<str>, Arc<str>) {
+        match &loc.0 {
+            LocKind::Text(t) => (t.path.clone(), t.element.clone()),
+            LocKind::Node(id) => {
+                let doc = self
+                    .doc
+                    .get_or_init(|| self.source.as_deref().and_then(|s| Document::parse(s).ok()));
+                match doc {
+                    Some(d) if *id < d.nodes.len() => {
+                        (Arc::from(d.path(*id)), Arc::from(d.start_tag_repr(*id)))
+                    }
+                    // not reachable: node locations are only recorded with a source
+                    _ => (Arc::from(""), Arc::from("")),
+                }
+            }
+        }
+    }
 }
 
 /// What a [`Out`] statement outputs.
@@ -390,4 +457,13 @@ pub struct Program<H: Host> {
     pub reference: Arc<str>,
     /// Size of the last rendered output (to presize the output buffer).
     pub size_hint: std::sync::atomic::AtomicUsize,
+    /// Source of the location texts.
+    pub(crate) locs: LocSource,
+}
+
+impl<H: Host> Program<H> {
+    /// `(path, element)` of a statement location, for error reporting.
+    pub fn location(&self, loc: &Loc) -> (Arc<str>, Arc<str>) {
+        self.locs.resolve(loc)
+    }
 }

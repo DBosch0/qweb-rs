@@ -8,7 +8,7 @@
 use core::{fmt, hash::Hash};
 use std::collections::HashMap;
 
-use qweb_core::xml::{Document, NodeId, NodeKind, local_name, namespace};
+use qweb_core::xml::{Document, NodeId, NodeKind, XStr, local_name, namespace};
 
 /// A node of the XPath data model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -920,7 +920,7 @@ pub trait Tree {
 pub struct LxmlTree<'a>(pub &'a Document);
 
 impl LxmlTree<'_> {
-    fn has_text(s: &Option<String>) -> bool {
+    fn has_text(s: &Option<XStr>) -> bool {
         s.as_deref().is_some_and(|s| !s.is_empty())
     }
 }
@@ -1764,7 +1764,7 @@ mod tests {
                     let n = d.node(id);
                     match n.get("id") {
                         Some(i) => format!("{}#{i}", n.tag),
-                        None => n.tag.clone(),
+                        None => n.tag.to_string(),
                     }
                 }
                 XNode::Text(id) => format!("text:{}", d.node(id).text.as_deref().unwrap()),

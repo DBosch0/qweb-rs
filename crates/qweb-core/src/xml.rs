@@ -14,6 +14,8 @@ use core::{error, fmt};
 use std::borrow::Cow;
 use std::sync::Arc;
 
+pub use crate::xstr::XStr;
+
 /// Index of a node in [`Document::nodes`].
 pub type NodeId = usize;
 
@@ -40,18 +42,18 @@ pub struct Node {
     /// Node kind.
     pub kind: NodeKind,
     /// Element: lxml-style tag (`{uri}local` or `local`). PI: target. Comment: empty.
-    pub tag: String,
+    pub tag: XStr,
     /// Prefix of the element namespace as written in the source.
     pub prefix: Option<String>,
     /// Attributes in source order, names in lxml notation.
-    pub attrs: Vec<(String, String)>,
+    pub attrs: Vec<(XStr, XStr)>,
     /// Namespaces in scope. Shared with the parent (same `Arc`) when the
     /// element declares none.
     pub nsmap: NsMap,
     /// Element text, comment text or PI text.
-    pub text: Option<String>,
+    pub text: Option<XStr>,
     /// Text after the node, up to the next sibling or the parent's end.
-    pub tail: Option<String>,
+    pub tail: Option<XStr>,
     /// Child nodes, in document order.
     pub children: Vec<NodeId>,
     /// Parent element; `None` for the root and detached nodes.
@@ -80,19 +82,19 @@ impl Node {
     }
 
     /// Like lxml `attrib.pop(name)`.
-    pub fn pop(&mut self, name: &str) -> Option<String> {
+    pub fn pop(&mut self, name: &str) -> Option<XStr> {
         let idx = self.attrs.iter().position(|(k, _)| k == name)?;
         // Not `swap_remove`: attribute order is output order.
         Some(self.attrs.remove(idx).1)
     }
 
     /// Like lxml `attrib[name] = value`: replace in place or append.
-    pub fn set(&mut self, name: &str, value: impl Into<String>) {
+    pub fn set(&mut self, name: &str, value: impl Into<XStr>) {
         let value = value.into();
         if let Some(slot) = self.attrs.iter_mut().find(|(k, _)| k == name) {
             slot.1 = value;
         } else {
-            self.attrs.push((name.to_owned(), value));
+            self.attrs.push((name.into(), value));
         }
     }
 }
@@ -178,10 +180,10 @@ impl Document {
     }
 
     /// Create a detached element (`etree.Element(tag, attrib)`).
-    pub fn new_element(&mut self, tag: &str, attrs: Vec<(String, String)>) -> NodeId {
+    pub fn new_element(&mut self, tag: &str, attrs: Vec<(XStr, XStr)>) -> NodeId {
         self.nodes.push(Node {
             kind: NodeKind::Element,
-            tag: tag.to_owned(),
+            tag: tag.into(),
             prefix: None,
             attrs,
             nsmap: Arc::new(Vec::new()),
@@ -211,7 +213,7 @@ impl Document {
 
     /// Wrap `id` in a new element: the new element takes the place of `id`
     /// in its parent and `id` (with its tail) becomes its only child.
-    pub fn wrap(&mut self, id: NodeId, tag: &str, attrs: Vec<(String, String)>) -> NodeId {
+    pub fn wrap(&mut self, id: NodeId, tag: &str, attrs: Vec<(XStr, XStr)>) -> NodeId {
         let new = self.new_element(tag, attrs);
         if let (Some(parent), Some(index)) = (self.nodes[id].parent, self.index_in_parent(id)) {
             self.insert(parent, index, new);
@@ -283,7 +285,7 @@ impl Document {
     pub fn new_pi(&mut self, target: &str, text: &str) -> NodeId {
         let id = self.new_element(target, Vec::new());
         self.nodes[id].kind = NodeKind::Pi;
-        self.nodes[id].text = Some(text.to_owned());
+        self.nodes[id].text = Some(text.into());
         id
     }
 
@@ -412,20 +414,21 @@ impl Document {
             .children
             .iter()
             .find(|&&c| self.nodes[c].kind == NodeKind::Element && self.nodes[c].tag == tag)
-            .map(|&c| self.nodes[c].text.clone().unwrap_or_default())
+            .map(|&c| self.nodes[c].text.as_deref().unwrap_or("").to_owned())
     }
 
     /// Pre-order iteration over elements (like lxml `iter()`, comments included).
     pub fn iter(&self, start: NodeId) -> Vec<NodeId> {
-        let mut out = Vec::new();
-        let mut stack = vec![start];
-        while let Some(id) = stack.pop() {
-            out.push(id);
-            for &c in self.nodes[id].children.iter().rev() {
-                stack.push(c);
-            }
+        self.descendants(start).collect()
+    }
+
+    /// Lazy pre-order iteration over the subtree of `start` (itself first,
+    /// comments included): like [`Document::iter`], without building a list.
+    pub fn descendants(&self, start: NodeId) -> Descendants<'_> {
+        Descendants {
+            doc: self,
+            stack: vec![start],
         }
-        out
     }
 
     /// lxml `getroottree().getpath(el)` (used for error messages only).
@@ -494,6 +497,23 @@ impl Document {
         }
         s.push_str("/>");
         s
+    }
+}
+
+/// Iterator returned by [`Document::descendants`].
+pub struct Descendants<'d> {
+    doc: &'d Document,
+    stack: Vec<NodeId>,
+}
+
+impl Iterator for Descendants<'_> {
+    type Item = NodeId;
+
+    fn next(&mut self) -> Option<NodeId> {
+        let id = self.stack.pop()?;
+        self.stack
+            .extend(self.doc.nodes[id].children.iter().rev().copied());
+        Some(id)
     }
 }
 
@@ -608,6 +628,13 @@ struct Parser<'a> {
     line: u32,
     line_pos: usize,
     nodes: Vec<Node>,
+    /// Scratch buffer for the decoded text of the element being parsed (it is
+    /// flushed before parsing a child, so one buffer serves every level).
+    text: String,
+    /// Scratch buffer for decoded attribute values.
+    value: String,
+    /// Scratch list of the attributes of the start tag being parsed.
+    raw_attrs: Vec<(&'a str, XStr)>,
 }
 
 fn is_name_end(b: u8) -> bool {
@@ -623,6 +650,9 @@ impl<'a> Parser<'a> {
             line: 1,
             line_pos: 0,
             nodes: Vec::new(),
+            text: String::new(),
+            value: String::new(),
+            raw_attrs: Vec::new(),
         }
     }
 
@@ -732,7 +762,7 @@ impl<'a> Parser<'a> {
         let line = self.node_line();
         self.nodes.push(Node {
             kind,
-            tag: String::new(),
+            tag: XStr::new(),
             prefix: None,
             attrs: Vec::new(),
             nsmap,
@@ -755,7 +785,8 @@ impl<'a> Parser<'a> {
         let qname = self.read_name()?;
         // Raw attributes first: namespace declarations must be known before
         // resolving prefixes.
-        let mut raw_attrs: Vec<(&'a str, String)> = Vec::new();
+        let mut raw_attrs = std::mem::take(&mut self.raw_attrs);
+        raw_attrs.clear();
         let mut own_ns: Vec<(Option<String>, String)> = Vec::new();
         let self_closing;
         loop {
@@ -782,9 +813,9 @@ impl<'a> Parser<'a> {
             self.skip_ws();
             let value = self.read_attr_value()?;
             if name == "xmlns" {
-                own_ns.push((None, value));
+                own_ns.push((None, value.into_string()));
             } else if let Some(p) = name.strip_prefix("xmlns:") {
-                own_ns.push((Some(p.to_owned()), value));
+                own_ns.push((Some(p.to_owned()), value.into_string()));
             } else {
                 if raw_attrs.iter().any(|(k, _)| *k == name) {
                     return self.err(format!("Attribute {name} redefined"));
@@ -824,21 +855,22 @@ impl<'a> Parser<'a> {
             None => (None, qname),
         };
         let ns = resolve(prefix, self)?;
-        let tag = match ns {
-            Some(u) if !u.is_empty() => format!("{{{u}}}{local}"),
-            _ => local.to_owned(),
+        let tag: XStr = match ns {
+            Some(u) if !u.is_empty() => format!("{{{u}}}{local}").into(),
+            _ => local.into(),
         };
         let mut attrs = Vec::with_capacity(raw_attrs.len());
-        for (name, value) in raw_attrs {
-            let key = match name.split_once(':') {
+        for (name, value) in raw_attrs.drain(..) {
+            let key: XStr = match name.split_once(':') {
                 Some((p, l)) => match resolve(Some(p), self)? {
-                    Some(u) => format!("{{{u}}}{l}"),
-                    None => l.to_owned(),
+                    Some(u) => format!("{{{u}}}{l}").into(),
+                    None => l.into(),
                 },
-                None => name.to_owned(), // unprefixed attributes have no namespace
+                None => name.into(), // unprefixed attributes have no namespace
             };
             attrs.push((key, value));
         }
+        self.raw_attrs = raw_attrs;
 
         let id = self.new_node(NodeKind::Element, parent, nsmap.clone());
         {
@@ -855,14 +887,14 @@ impl<'a> Parser<'a> {
             return Ok(id);
         }
 
-        // Content
-        let mut text = String::new();
+        // Content (decoded into `self.text`, empty here: the parent flushed it)
         let mut has_text = false;
         let mut last_child: Option<NodeId> = None;
         macro_rules! flush_text {
             () => {
                 if has_text {
-                    let t = std::mem::take(&mut text);
+                    let t = XStr::from(self.text.as_str());
+                    self.text.clear();
                     match last_child {
                         Some(c) => self.nodes[c].tail = Some(t),
                         None => self.nodes[id].text = Some(t),
@@ -900,8 +932,9 @@ impl<'a> Parser<'a> {
                         message: "Comment not terminated".into(),
                         line: self.error_line(),
                     })?;
-                    let mut body = String::new();
-                    normalize_newlines(&self.src[self.pos + 4..end], &mut body);
+                    normalize_newlines(&self.src[self.pos + 4..end], &mut self.text);
+                    let body = XStr::from(self.text.as_str());
+                    self.text.clear();
                     let c = self.new_node(NodeKind::Comment, Some(id), nsmap.clone());
                     self.nodes[c].text = Some(body);
                     self.nodes[id].children.push(c);
@@ -912,7 +945,7 @@ impl<'a> Parser<'a> {
                         message: "CData section not finished".into(),
                         line: self.error_line(),
                     })?;
-                    normalize_newlines(&self.src[self.pos + 9..end], &mut text);
+                    normalize_newlines(&self.src[self.pos + 9..end], &mut self.text);
                     has_text = true;
                     self.advance(end + 3 - self.pos);
                 } else if self.starts_with("<?") {
@@ -927,10 +960,10 @@ impl<'a> Parser<'a> {
                         None => (body, ""),
                     };
                     let c = self.new_node(NodeKind::Pi, Some(id), nsmap.clone());
-                    self.nodes[c].tag = target.to_owned();
-                    let mut text = String::new();
-                    normalize_newlines(rest, &mut text);
-                    self.nodes[c].text = Some(text);
+                    self.nodes[c].tag = target.into();
+                    normalize_newlines(rest, &mut self.text);
+                    self.nodes[c].text = Some(XStr::from(self.text.as_str()));
+                    self.text.clear();
                     self.nodes[id].children.push(c);
                     self.advance(end + 2 - self.pos);
                     last_child = Some(c);
@@ -943,7 +976,7 @@ impl<'a> Parser<'a> {
                 let end = memchr::memchr(b'<', &self.b[self.pos..])
                     .map_or(self.b.len(), |i| self.pos + i);
                 let raw = &self.src[self.pos..end];
-                decode_text(raw, &mut text, false).map_err(|m| XmlError {
+                decode_text(raw, &mut self.text, false).map_err(|m| XmlError {
                     message: m,
                     line: self.error_line(),
                 })?;
@@ -953,7 +986,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn read_attr_value(&mut self) -> Result<String, XmlError> {
+    fn read_attr_value(&mut self) -> Result<XStr, XmlError> {
         if self.pos >= self.b.len() {
             return self.err("AttValue: \" or ' expected");
         }
@@ -970,13 +1003,13 @@ impl<'a> Parser<'a> {
         if raw.contains('<') {
             return self.err("Unescaped '<' not allowed in attributes values");
         }
-        let mut out = String::with_capacity(raw.len());
-        decode_text(raw, &mut out, true).map_err(|m| XmlError {
+        self.value.clear();
+        decode_text(raw, &mut self.value, true).map_err(|m| XmlError {
             message: m,
             line: self.error_line(),
         })?;
         self.advance(end + 1 - self.pos);
-        Ok(out)
+        Ok(XStr::from(self.value.as_str()))
     }
 }
 

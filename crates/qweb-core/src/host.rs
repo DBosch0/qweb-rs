@@ -12,7 +12,7 @@ use crate::error::{Error, Result};
 use crate::expr::{BinOp, CmpOp, UnOp};
 use crate::ir::Program;
 use crate::runtime::{AttrVal, Lazy};
-use crate::xml::NsMap;
+use crate::xml::{NsMap, XStr};
 
 /// Template reference, like `_id_or_xmlid`: numeric names are ids.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -419,7 +419,7 @@ pub trait Host: Sized + Send + Sync + 'static {
     fn pre_processing_att(
         &self,
         _ctx: &Self::Context,
-        _attrs: &mut Vec<(String, String)>,
+        _attrs: &mut Vec<(XStr, XStr)>,
     ) -> Result<()> {
         Ok(())
     }
@@ -429,8 +429,8 @@ pub trait Host: Sized + Send + Sync + 'static {
         &self,
         _ctx: &Self::Context,
         _tag: &str,
-        attrs: Vec<(String, String)>,
-    ) -> Result<Vec<(String, String)>> {
+        attrs: Vec<(XStr, XStr)>,
+    ) -> Result<Vec<(XStr, XStr)>> {
         Ok(attrs)
     }
     /// Whether dynamic attributes go through [`Host::post_processing_att`]

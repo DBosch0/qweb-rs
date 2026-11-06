@@ -73,6 +73,7 @@ pub mod ir;
 pub mod runtime;
 pub mod url;
 pub mod xml;
+pub mod xstr;
 
 mod format;
 mod text;

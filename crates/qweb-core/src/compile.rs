@@ -17,7 +17,7 @@ use crate::format::{FormatPart as FP, split_format};
 use crate::host::{CompileHooks, CompileOptions, Host, TemplateRef};
 use crate::ir::*;
 use crate::text;
-use crate::xml::{self, Document, NodeId, NodeKind, NsMap};
+use crate::xml::{self, Document, NodeId, NodeKind, NsMap, XStr};
 
 /// HTML void elements: rendered as `<tag/>`, without a closing tag.
 pub const VOID_ELEMENTS: &[&str] = &[
@@ -230,6 +230,14 @@ pub struct Compiler<'a, H: Host> {
     /// before its directives are processed
     /// (`compile_context['_qweb_error_path_xml']`).
     locs: Vec<Option<Loc>>,
+    /// The template source, to build location texts on demand.
+    loc_src: LocSource,
+    /// Elements whose attributes may differ from the parsed source: their
+    /// location text is built when recorded.
+    changed: Vec<bool>,
+    /// A custom directive had mutable access to the tree: every location
+    /// recorded from then on is built as text.
+    edited: bool,
 }
 
 /// Compiler interface given to custom directive handlers
@@ -269,6 +277,7 @@ impl<H: Host> CompileApi<H> for DirApi<'_, '_, H> {
         &self.c.doc
     }
     fn doc_mut(&mut self) -> &mut Document {
+        self.c.edited = true;
         &mut self.c.doc
     }
     fn append_text(&mut self, text: &str) {
@@ -345,7 +354,7 @@ pub fn py_int(s: &str) -> Option<i64> {
     }
 }
 
-fn compile_bool(attr: Option<String>, default: bool) -> bool {
+fn compile_bool(attr: Option<XStr>, default: bool) -> bool {
     if let Some(a) = attr
         && !a.is_empty()
     {
@@ -362,6 +371,10 @@ fn compile_bool(attr: Option<String>, default: bool) -> bool {
 impl<'a, H: Host> Compiler<'a, H> {
     /// Compile the template whose root element is the document root.
     ///
+    /// `source` is the XML `doc` was parsed from (with [`Document::parse`]):
+    /// error locations are then built from it only when an error is
+    /// reported. Without it, they are built while compiling.
+    ///
     /// `name` is used in error messages, `xmlid` and `viewid` become the
     /// `xmlid` / `viewid` template values (`xmlid` defaults to the root
     /// `t-name`).
@@ -369,6 +382,7 @@ impl<'a, H: Host> Compiler<'a, H> {
         host: &'a H,
         ctx: &'a H::Context,
         doc: Document,
+        source: Option<Arc<str>>,
         name: Arc<str>,
         xmlid: Option<String>,
         viewid: Option<H::Value>,
@@ -398,6 +412,7 @@ impl<'a, H: Host> Compiler<'a, H> {
             None => name.clone(),
         };
         let locs = vec![None; doc.nodes.len()];
+        let changed = vec![false; doc.nodes.len()];
         let mut c = Compiler {
             host,
             ctx,
@@ -411,6 +426,9 @@ impl<'a, H: Host> Compiler<'a, H> {
             name: name.clone(),
             reference: reference.clone(),
             locs,
+            loc_src: LocSource::new(source),
+            changed,
+            edited: false,
         };
         let root = c.doc.root;
         let ref_name = xmlid.or_else(|| c.doc.node(root).get("t-name").map(str::to_owned));
@@ -437,6 +455,7 @@ impl<'a, H: Host> Compiler<'a, H> {
             name,
             reference,
             size_hint: std::sync::atomic::AtomicUsize::new(0),
+            locs: c.loc_src,
         })
     }
 
@@ -489,21 +508,65 @@ impl<'a, H: Host> Compiler<'a, H> {
     }
 
     fn current_loc(&self, id: NodeId) -> Loc {
-        Loc {
-            path: Arc::from(self.doc.path(id)),
-            element: Arc::from(self.doc.start_tag_repr(id)),
+        Loc::current(&self.doc, id)
+    }
+
+    /// Record the location of an element whose compilation starts. It is a
+    /// node id when the element is as parsed, else its current text.
+    fn record_loc(&mut self, id: NodeId) {
+        if self.locs.len() <= id {
+            // nodes created by custom directives
+            self.locs.resize(id + 1, None);
+        }
+        let as_parsed = !self.edited
+            && self.loc_src.has_source()
+            && !self.changed.get(id).copied().unwrap_or(true);
+        self.locs[id] = Some(if as_parsed {
+            Loc::node(id)
+        } else {
+            self.current_loc(id)
+        });
+        // compiling pops its attributes
+        self.mark_changed(id);
+    }
+
+    /// Note that the attributes of an element were modified.
+    fn mark_changed(&mut self, id: NodeId) {
+        if let Some(c) = self.changed.get_mut(id) {
+            *c = true;
         }
     }
 
     fn located(&self, err: Error, id: NodeId) -> Error {
-        let loc = self.loc(id);
+        let (path, element) = self.loc_src.resolve(&self.loc(id));
         // compile errors are reported with the template reference (`_get_error_info`)
         err.with_location(crate::Frame {
             template: self.reference.clone(),
             reference: self.reference.clone(),
-            path: loc.path,
-            element: loc.element,
+            path,
+            element,
         })
+    }
+
+    /// Pop the next attribute of `id` whose name matches `f`, starting at
+    /// index `*i`: called until `None`, it pops the matching attributes in
+    /// source order (`for key in list(el.attrib): ... el.attrib.pop(key)`),
+    /// without copying the names first.
+    fn take_attr(
+        &mut self,
+        id: NodeId,
+        i: &mut usize,
+        f: impl Fn(&str) -> bool,
+    ) -> Option<(XStr, XStr)> {
+        let attrs = &mut self.doc.node_mut(id).attrs;
+        while *i < attrs.len() {
+            if f(&attrs[*i].0) {
+                // Not `swap_remove`: attribute order is output order.
+                return Some(attrs.remove(*i));
+            }
+            *i += 1;
+        }
+        None
     }
 
     fn is_t(&self, id: NodeId) -> bool {
@@ -514,7 +577,7 @@ impl<'a, H: Host> Compiler<'a, H> {
         // (unqualified tag, tag with prefix)
         let n = self.doc.node(id);
         if n.nsmap.is_empty() {
-            (n.tag.clone(), n.tag.clone())
+            (n.tag.to_string(), n.tag.to_string())
         } else {
             let local = n.local_name().to_owned();
             let tag = match &n.prefix {
@@ -701,12 +764,13 @@ impl<'a, H: Host> Compiler<'a, H> {
     // ----- nodes -------------------------------------------------------------
 
     fn compile_root(&mut self, root: NodeId, cx: &mut Cx) -> Result<Code<H>> {
+        self.mark_changed(root);
         let n = self.doc.node_mut(root);
         n.pop("t-name");
         if let Some(t) = &n.text {
             let off = text::first_rstrip_offset(t);
             if off > 0 {
-                n.text = Some(t[off..].to_owned());
+                n.text = Some(t[off..].into());
             }
         }
         self.compile_node(root, cx)
@@ -733,12 +797,7 @@ impl<'a, H: Host> Compiler<'a, H> {
             return self.compile_static_node(id, cx);
         }
         let (unqualified, el_tag) = self.el_tag(id);
-        let loc = self.current_loc(id);
-        if self.locs.len() <= id {
-            // nodes created by custom directives
-            self.locs.resize(id + 1, None);
-        }
-        self.locs[id] = Some(loc);
+        self.record_loc(id);
         let mut iter = DirIter::default();
         {
             let n = self.doc.node_mut(id);
@@ -763,7 +822,13 @@ impl<'a, H: Host> Compiler<'a, H> {
             return res;
         }
         // `_remove_translate_suffix`
-        let keys: Vec<String> = self
+        let n = self.doc.node(id);
+        if !n.attrs.iter().any(|(k, _)| k.ends_with(".translate")) {
+            return Ok(());
+        }
+        // `set` may append a name that ends with `.translate` itself: walk
+        // a copy of the names, like `list(el.attrib)`.
+        let keys: Vec<XStr> = self
             .doc
             .node(id)
             .attrs
@@ -782,14 +847,14 @@ impl<'a, H: Host> Compiler<'a, H> {
     }
 
     /// New namespaces of an element compared to the inherited ones (`set(el.nsmap.items()) - set(nsmap.items())`).
-    fn new_namespaces(&self, id: NodeId, inherited: &NsMap) -> Vec<(String, String)> {
+    fn new_namespaces(&self, id: NodeId, inherited: &NsMap) -> Vec<(XStr, XStr)> {
         let n = self.doc.node(id);
         n.nsmap
             .iter()
             .filter(|item| !inherited.contains(item))
             .map(|(p, u)| match p {
-                None => ("xmlns".to_owned(), u.clone()),
-                Some(p) => (format!("xmlns:{p}"), u.clone()),
+                None => ("xmlns".into(), u.into()),
+                Some(p) => (format!("xmlns:{p}").into(), u.into()),
             })
             .collect()
     }
@@ -823,7 +888,7 @@ impl<'a, H: Host> Compiler<'a, H> {
         let (unqualified, el_tag) = self.el_tag(id);
         // The attributes are consumed (Python clears them after output).
         let attrs = std::mem::take(&mut self.doc.node_mut(id).attrs);
-        let attrib: Vec<(String, String)> = if !has_ns {
+        let attrib: Vec<(XStr, XStr)> = if !has_ns {
             attrs
         } else {
             let mut a = self.new_namespaces(id, &cx.nsmap);
@@ -832,7 +897,7 @@ impl<'a, H: Host> Compiler<'a, H> {
                 if let Some(slot) = a.iter_mut().find(|(n, _)| *n == name) {
                     slot.1 = v;
                 } else {
-                    a.push((name, v));
+                    a.push((name.into(), v));
                 }
             }
             a
@@ -920,19 +985,18 @@ impl<'a, H: Host> Compiler<'a, H> {
         }
         // Unordered directives still present: Python re-dispatches the last
         // directive of the loop (a long-standing quirk, reproduced).
-        let leftovers: Vec<String> = self
+        let leftovers = self
             .doc
             .node(id)
             .attrs
             .iter()
-            .map(|(k, _)| k.clone())
-            .filter(|k| {
+            .filter(|(k, _)| {
                 !SPECIAL_DIRECTIVES.contains(&k.as_str())
                     && k.starts_with("t-")
                     && self.has_handler(k)
             })
-            .collect();
-        for _ in leftovers {
+            .count();
+        for _ in 0..leftovers {
             match last {
                 Some(d) => {
                     let c = self
@@ -1012,19 +1076,11 @@ impl<'a, H: Host> Compiler<'a, H> {
     }
 
     fn directive_options(&mut self, id: NodeId) -> Result<Code<H>> {
-        let keys: Vec<String> = self
-            .doc
-            .node(id)
-            .attrs
-            .iter()
-            .map(|(k, _)| k.clone())
-            .collect();
         let mut items = Vec::new();
-        for key in keys {
-            if let Some(name) = key.strip_prefix("t-options-") {
-                let value = self.doc.node_mut(id).pop(&key).unwrap_or_default();
-                items.push((self.host.str(name), self.compile_expr(&value, false)?));
-            }
+        let mut i = 0;
+        while let Some((key, value)) = self.take_attr(id, &mut i, |k| k.starts_with("t-options-")) {
+            let name = &key["t-options-".len()..];
+            items.push((self.host.str(name), self.compile_expr(&value, false)?));
         }
         let base = match self.doc.node_mut(id).pop("t-options") {
             Some(v) if !v.is_empty() => Some(self.compile_expr(&v, false)?),
@@ -1058,56 +1114,40 @@ impl<'a, H: Host> Compiler<'a, H> {
         if !self.doc.node(id).nsmap.is_empty() {
             for (k, v) in self.new_namespaces(id, &cx.nsmap) {
                 code.push(Stmt::AttrSet {
-                    name: Arc::from(k),
-                    value: AttrSrc::Static(Arc::from(v)),
+                    name: Arc::from(k.as_str()),
+                    value: AttrSrc::Static(Arc::from(v.as_str())),
                     loc: loc.clone(),
                 });
             }
         }
         self.pre_processing_att(id)?;
         // static attributes
-        let statics: Vec<(String, String)> = self
-            .doc
-            .node(id)
-            .attrs
-            .iter()
-            .filter(|(k, _)| !k.starts_with("t-"))
-            .cloned()
-            .collect();
-        for (key, value) in statics {
-            self.doc.node_mut(id).pop(&key);
+        let mut i = 0;
+        while let Some((key, value)) = self.take_attr(id, &mut i, |k| !k.starts_with("t-")) {
             let name = self.attr_qname(id, &cx.nsmap, &key);
             code.push(Stmt::AttrSet {
                 name: Arc::from(name),
-                value: AttrSrc::Static(Arc::from(value)),
+                value: AttrSrc::Static(Arc::from(value.as_str())),
                 loc: loc.clone(),
             });
         }
         // dynamic attributes, in source order
-        let keys: Vec<String> = self
-            .doc
-            .node(id)
-            .attrs
-            .iter()
-            .map(|(k, _)| k.clone())
-            .collect();
-        for key in keys {
+        let mut i = 0;
+        let dynamic = |k: &str| k.starts_with("t-att-") || k.starts_with("t-attf-") || k == "t-att";
+        while let Some((key, value)) = self.take_attr(id, &mut i, dynamic) {
             if let Some(name) = key.strip_prefix("t-attf-") {
-                let value = self.doc.node_mut(id).pop(&key).unwrap_or_default();
                 code.push(Stmt::AttrSet {
                     name: Arc::from(name),
                     value: AttrSrc::Format(self.compile_format(&value)?),
                     loc: loc.clone(),
                 });
             } else if let Some(name) = key.strip_prefix("t-att-") {
-                let value = self.doc.node_mut(id).pop(&key).unwrap_or_default();
                 code.push(Stmt::AttrSet {
                     name: Arc::from(name),
                     value: AttrSrc::Expr(self.compile_expr(&value, false)?),
                     loc: loc.clone(),
                 });
-            } else if key == "t-att" {
-                let value = self.doc.node_mut(id).pop(&key).unwrap_or_default();
+            } else {
                 code.push(Stmt::AttrUpdate {
                     value: self.compile_expr(&value, false)?,
                     loc: loc.clone(),
@@ -1189,7 +1229,7 @@ impl<'a, H: Host> Compiler<'a, H> {
         let loc = self.loc(id);
         if let Some(expr) = self.doc.node_mut(id).pop("t-value") {
             let expr = if expr.is_empty() {
-                "None".to_owned()
+                XStr::from("None")
             } else {
                 expr
             };
@@ -1256,7 +1296,7 @@ impl<'a, H: Host> Compiler<'a, H> {
             cx
         };
         if let Some(t) = self.doc.node(id).text.clone() {
-            self.append(t);
+            self.append_str(&t);
         }
         let mut body = Vec::new();
         let children = self.doc.node(id).children.clone();
@@ -1280,7 +1320,7 @@ impl<'a, H: Host> Compiler<'a, H> {
                 }
             }
             if let Some(tail) = self.doc.node(item).tail.clone() {
-                self.append(tail);
+                self.append_str(&tail);
             }
         }
         Ok(body)
@@ -1329,6 +1369,7 @@ impl<'a, H: Host> Compiler<'a, H> {
         if let Some(nid) = next {
             let nn = self.doc.node(nid);
             if nn.kind == NodeKind::Element && (nn.has("t-else") || nn.has("t-elif")) {
+                self.mark_changed(nid);
                 self.doc.node_mut(nid).set("t-else-valid", "True");
                 if let Some(parent) = self.doc.node(id).parent {
                     for c in comments {
@@ -1386,7 +1427,7 @@ impl<'a, H: Host> Compiler<'a, H> {
             .node_mut(id)
             .pop("t-groups")
             .or(g2)
-            .unwrap_or_else(|| "None".to_owned());
+            .unwrap_or_else(|| "None".into());
         let strip = self.rstrip();
         let mut code = self.flush(false);
         if !strip.is_empty() && !self.is_t(id) {
@@ -1629,16 +1670,12 @@ impl<'a, H: Host> Compiler<'a, H> {
         };
 
         let mut args = Vec::new();
-        let keys: Vec<String> = self
-            .doc
-            .node(id)
-            .attrs
-            .iter()
-            .map(|(k, _)| k.clone())
-            .collect();
-        for key in keys {
+        let mut i = 0;
+        let is_arg = |k: &str| {
+            k.ends_with(".f") || k.ends_with(".translate") || !k.starts_with("t-") || k == "t-args"
+        };
+        while let Some((key, value)) = self.take_attr(id, &mut i, is_arg) {
             if let Some(name) = key.strip_suffix(".f") {
-                let value = self.doc.node_mut(id).pop(&key).unwrap_or_default();
                 args.push(CallArg::Format(
                     self.host.key(name),
                     self.compile_format(&value)?,
@@ -1646,7 +1683,6 @@ impl<'a, H: Host> Compiler<'a, H> {
             } else if key.ends_with(".translate") {
                 let name = key.trim_end_matches(".translate");
                 let name = name.strip_suffix(".f").unwrap_or(name);
-                let value = self.doc.node_mut(id).pop(&key).unwrap_or_default();
                 let fmt = self.compile_format(&value)?;
                 if self.opts.edit_translations {
                     args.push(CallArg::MarkupFormat(self.host.key(name), fmt));
@@ -1654,13 +1690,11 @@ impl<'a, H: Host> Compiler<'a, H> {
                     args.push(CallArg::Format(self.host.key(name), fmt));
                 }
             } else if !key.starts_with("t-") {
-                let value = self.doc.node_mut(id).pop(&key).unwrap_or_default();
                 args.push(CallArg::Expr(
                     self.host.key(&key),
                     self.compile_expr(&value, false)?,
                 ));
-            } else if key == "t-args" {
-                let value = self.doc.node_mut(id).pop(&key).unwrap_or_default();
+            } else {
                 args.push(CallArg::Args(self.compile_expr(&value, false)?));
             }
         }
@@ -1702,7 +1736,7 @@ impl<'a, H: Host> Compiler<'a, H> {
         let binary = compile_bool(n.pop("t-binary"), false);
         let defer_load = compile_bool(n.pop("defer_load"), false);
         let lazy_load = compile_bool(n.pop("lazy_load"), false);
-        let media = n.pop("media").map(String::into_boxed_str);
+        let media = n.pop("media").map(XStr::into_boxed_str);
         let autoprefix = compile_bool(n.pop("t-autoprefix"), false);
         code.push(Stmt::Assets(Box::new(Assets {
             bundle: bundle.into(),

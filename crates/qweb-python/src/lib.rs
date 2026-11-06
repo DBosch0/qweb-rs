@@ -33,7 +33,7 @@ use qweb_core::expr::{BinOp, CmpOp, UnOp};
 use qweb_core::host::{CompileHooks, CompileOptions, Converted, Loaded, LoopSource, TemplateRef};
 use qweb_core::ir::Program;
 use qweb_core::runtime::AttrVal;
-use qweb_core::xml::{Document, NodeId, NsMap};
+use qweb_core::xml::{Document, NodeId, NsMap, XStr};
 use qweb_core::{Engine, Error, ErrorKind, Host, Lazy, Result};
 
 /// The GIL is always held while rendering: every entry point is a Python call.
@@ -937,25 +937,18 @@ impl Host for PyHost {
             .map(|_| ())
             .map_err(herr)
     }
-    fn pre_processing_att(
-        &self,
-        ctx: &Arc<PyCtx>,
-        attrs: &mut Vec<(String, String)>,
-    ) -> Result<()> {
+    fn pre_processing_att(&self, ctx: &Arc<PyCtx>, attrs: &mut Vec<(XStr, XStr)>) -> Result<()> {
         let py = py();
         (|| -> PyResult<()> {
             let d = PyDict::new(py);
             for (k, v) in attrs.iter() {
-                d.set_item(k, v)?;
+                d.set_item(k.as_str(), v.as_str())?;
             }
             ctx.bridge(py)
                 .call_method1(pyo3::intern!(py, "pre_processing_att"), (&d,))?;
             attrs.clear();
             for (k, v) in d.iter() {
-                attrs.push((
-                    k.str()?.to_cow()?.into_owned(),
-                    v.str()?.to_cow()?.into_owned(),
-                ));
+                attrs.push((k.str()?.to_cow()?.into(), v.str()?.to_cow()?.into()));
             }
             Ok(())
         })()
@@ -965,13 +958,13 @@ impl Host for PyHost {
         &self,
         ctx: &Arc<PyCtx>,
         tag: &str,
-        attrs: Vec<(String, String)>,
-    ) -> Result<Vec<(String, String)>> {
+        attrs: Vec<(XStr, XStr)>,
+    ) -> Result<Vec<(XStr, XStr)>> {
         let py = py();
-        (|| -> PyResult<Vec<(String, String)>> {
+        (|| -> PyResult<Vec<(XStr, XStr)>> {
             let d = PyDict::new(py);
             for (k, v) in attrs.iter() {
-                d.set_item(k, v)?;
+                d.set_item(k.as_str(), v.as_str())?;
             }
             d.set_item("__is_static_node", true)?;
             let r = ctx
@@ -981,10 +974,7 @@ impl Host for PyHost {
             for (k, v) in mapping_items(&r)? {
                 let (k, v) = (k.bind(py), v.bind(py));
                 if v.is_truthy()? || v.is_instance_of::<PyString>() {
-                    out.push((
-                        k.str()?.to_cow()?.into_owned(),
-                        v.str()?.to_cow()?.into_owned(),
-                    ));
+                    out.push((k.str()?.to_cow()?.into(), v.str()?.to_cow()?.into()));
                 }
             }
             Ok(out)
@@ -1194,22 +1184,22 @@ impl PyElement {
     /// Tag name.
     #[getter]
     fn tag(&self) -> PyResult<String> {
-        self.with(|d, id| d.node(id).tag.clone())
+        self.with(|d, id| d.node(id).tag.to_string())
     }
     /// Text before the first child.
     #[getter]
     fn text(&self) -> PyResult<Option<String>> {
-        self.with(|d, id| d.node(id).text.clone())
+        self.with(|d, id| d.node(id).text.as_deref().map(str::to_owned))
     }
     /// Set the text.
     #[setter]
     fn set_text(&self, text: Option<String>) -> PyResult<()> {
-        self.with_mut(|d, id| d.node_mut(id).text = text)
+        self.with_mut(|d, id| d.node_mut(id).text = text.map(XStr::from))
     }
     /// Text after the element.
     #[getter]
     fn tail(&self) -> PyResult<Option<String>> {
-        self.with(|d, id| d.node(id).tail.clone())
+        self.with(|d, id| d.node(id).tail.as_deref().map(str::to_owned))
     }
     /// Attributes, as a live dict-like `Attrib`.
     #[getter]
@@ -1234,11 +1224,23 @@ impl PyElement {
     }
     /// Attribute names, in order.
     fn keys(&self) -> PyResult<Vec<String>> {
-        self.with(|d, id| d.node(id).attrs.iter().map(|(k, _)| k.clone()).collect())
+        self.with(|d, id| {
+            d.node(id)
+                .attrs
+                .iter()
+                .map(|(k, _)| k.to_string())
+                .collect()
+        })
     }
     /// `(name, value)` attribute pairs, in order.
     fn items(&self) -> PyResult<Vec<(String, String)>> {
-        self.with(|d, id| d.node(id).attrs.clone())
+        self.with(|d, id| {
+            d.node(id)
+                .attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        })
     }
     /// Text of the first element matching `path` (`ElementPath`).
     #[pyo3(signature = (path, default=None))]
@@ -1295,7 +1297,10 @@ pub struct PyAttrib {
 }
 
 impl PyAttrib {
-    fn with<R>(&self, f: impl FnOnce(&mut Document, NodeId) -> R) -> PyResult<R> {
+    fn with<R>(&self, f: impl FnOnce(&Document, NodeId) -> R) -> PyResult<R> {
+        api_of(&self.api, |a| Ok(f(a.doc(), self.id)))
+    }
+    fn with_mut<R>(&self, f: impl FnOnce(&mut Document, NodeId) -> R) -> PyResult<R> {
         api_of(&self.api, |a| Ok(f(a.doc_mut(), self.id)))
     }
 }
@@ -1308,10 +1313,10 @@ impl PyAttrib {
     }
     fn __setitem__(&self, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
         let value = value.str()?.to_cow()?.into_owned();
-        self.with(|d, id| d.node_mut(id).set(key, value))
+        self.with_mut(|d, id| d.node_mut(id).set(key, value))
     }
     fn __delitem__(&self, key: &str) -> PyResult<()> {
-        self.with(|d, id| d.node_mut(id).pop(key))?
+        self.with_mut(|d, id| d.node_mut(id).pop(key))?
             .map(|_| ())
             .ok_or_else(|| PyKeyError::new_err(key.to_owned()))
     }
@@ -1336,7 +1341,7 @@ impl PyAttrib {
     /// Remove attribute `key` and return its value (or `default`).
     #[pyo3(signature = (key, *default))]
     fn pop(&self, py: Python<'_>, key: &str, default: &Bound<'_, PyTuple>) -> PyResult<Py<PyAny>> {
-        match self.with(|d, id| d.node_mut(id).pop(key))? {
+        match self.with_mut(|d, id| d.node_mut(id).pop(key))? {
             Some(v) => Ok(PyString::new(py, &v).into_any().unbind()),
             None if !default.is_empty() => Ok(default.get_item(0)?.unbind()),
             None => Err(PyKeyError::new_err(key.to_owned())),
@@ -1344,15 +1349,33 @@ impl PyAttrib {
     }
     /// Attribute names, in order.
     fn keys(&self) -> PyResult<Vec<String>> {
-        self.with(|d, id| d.node(id).attrs.iter().map(|(k, _)| k.clone()).collect())
+        self.with(|d, id| {
+            d.node(id)
+                .attrs
+                .iter()
+                .map(|(k, _)| k.to_string())
+                .collect()
+        })
     }
     /// Attribute values, in order.
     fn values(&self) -> PyResult<Vec<String>> {
-        self.with(|d, id| d.node(id).attrs.iter().map(|(_, v)| v.clone()).collect())
+        self.with(|d, id| {
+            d.node(id)
+                .attrs
+                .iter()
+                .map(|(_, v)| v.to_string())
+                .collect()
+        })
     }
     /// `(name, value)` attribute pairs, in order.
     fn items(&self) -> PyResult<Vec<(String, String)>> {
-        self.with(|d, id| d.node(id).attrs.clone())
+        self.with(|d, id| {
+            d.node(id)
+                .attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        })
     }
 }
 
@@ -1391,10 +1414,7 @@ impl PyCompiler {
         let mut attrs = Vec::new();
         if let Some(a) = attrib {
             for (k, v) in a.iter() {
-                attrs.push((
-                    k.str()?.to_cow()?.into_owned(),
-                    v.str()?.to_cow()?.into_owned(),
-                ));
+                attrs.push((k.str()?.to_cow()?.into(), v.str()?.to_cow()?.into()));
             }
         }
         let id = el.id;

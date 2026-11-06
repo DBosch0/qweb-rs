@@ -271,8 +271,8 @@ impl Dom {
             NodeKind::Comment => self.create_comment(src.text.as_deref().unwrap_or("")),
             NodeKind::Pi => {
                 let mut n = DomNode::new(DomKind::Pi);
-                n.name = src.tag.clone();
-                n.data = src.text.clone().unwrap_or_default();
+                n.name = src.tag.to_string();
+                n.data = src.text.as_deref().unwrap_or("").to_owned();
                 self.alloc(n)
             }
             NodeKind::Element => {
@@ -316,7 +316,7 @@ impl Dom {
                     n.attrs.push(DomAttr {
                         qname,
                         ns: ans.map(str::to_owned),
-                        value: v.clone(),
+                        value: v.to_string(),
                     });
                 }
                 let el = self.alloc(n);

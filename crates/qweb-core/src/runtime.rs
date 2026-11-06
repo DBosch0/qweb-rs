@@ -134,8 +134,28 @@ impl<H: Host> Engine<H> {
         viewid: Option<H::Value>,
         name: &str,
     ) -> Result<Program<H>> {
-        let doc = Document::parse(source).map_err(|e| Error::new(ErrorKind::Xml(e.to_string())))?;
-        Compiler::compile(&self.host, ctx, doc, Arc::from(name), xmlid, viewid)
+        self.compile_source(Arc::from(source), ctx, xmlid, viewid, name)
+    }
+
+    fn compile_source(
+        &self,
+        source: Arc<str>,
+        ctx: &H::Context,
+        xmlid: Option<String>,
+        viewid: Option<H::Value>,
+        name: &str,
+    ) -> Result<Program<H>> {
+        let doc =
+            Document::parse(&source).map_err(|e| Error::new(ErrorKind::Xml(e.to_string())))?;
+        Compiler::compile(
+            &self.host,
+            ctx,
+            doc,
+            Some(source),
+            Arc::from(name),
+            xmlid,
+            viewid,
+        )
     }
 
     fn compile_cached(
@@ -164,8 +184,13 @@ impl<H: Host> Engine<H> {
         if let Some(p) = self.by_source.read().unwrap().get(&key) {
             return Ok(p.clone());
         }
-        let program =
-            Arc::new(self.compile_program(&key.source, ctx, key.xmlid.clone(), viewid, name)?);
+        let program = Arc::new(self.compile_source(
+            key.source.clone(),
+            ctx,
+            key.xmlid.clone(),
+            viewid,
+            name,
+        )?);
         let mut cache = self.by_source.write().unwrap();
         if cache.len() >= self.max_entries {
             cache.clear();
@@ -327,11 +352,12 @@ struct Renderer<'e, H: Host> {
 }
 
 fn err_frame<H: Host>(prog: &Program<H>, loc: &Loc) -> crate::Frame {
+    let (path, element) = prog.location(loc);
     crate::Frame {
         template: prog.name.clone(),
         reference: prog.reference.clone(),
-        path: loc.path.clone(),
-        element: loc.element.clone(),
+        path,
+        element,
     }
 }
 

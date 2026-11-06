@@ -4,7 +4,7 @@ use core::{error, fmt};
 
 use qweb_core::compile::py_repr_str as py_repr;
 use qweb_core::escape::escape as html_escape;
-use qweb_core::xml::{Document, NodeId, NodeKind};
+use qweb_core::xml::{Document, NodeId, NodeKind, XStr};
 
 use crate::xpath::{XPath, py_is_space};
 
@@ -108,15 +108,13 @@ pub fn locate_node(
             message: e.0,
         });
     }
-    let iter = doc.iter(arch);
-    let elements = iter
-        .into_iter()
+    // lazy pre-order walk: stops at the first match
+    let mut elements = doc
+        .descendants(arch)
         .filter(|&n| doc.node(n).kind == NodeKind::Element && doc.node(n).tag == s.tag);
     if s.tag == "field" {
         let name = s.get("name");
-        return Ok(elements
-            .into_iter()
-            .find(|&n| doc.node(n).get("name") == name));
+        return Ok(elements.find(|&n| doc.node(n).get("name") == name));
     }
     for n in elements {
         if s.attrs
@@ -135,20 +133,23 @@ pub fn locate_node(
 fn add_text_before(
     doc: &mut Document,
     node: NodeId,
-    text: Option<String>,
+    text: Option<XStr>,
 ) -> Result<(), InheritError> {
     let Some(text) = text else { return Ok(()) };
     match doc.prev_sibling(node) {
         Some(prev) => {
             let n = doc.node_mut(prev);
-            n.tail = Some(n.tail.take().unwrap_or_default() + &text);
+            n.tail = Some(match n.tail.take() {
+                None => text,
+                Some(t) => (t.into_string() + &text).into(),
+            });
         }
         None => {
             let Some(parent) = doc.node(node).parent else {
                 return value_err("'NoneType' object has no attribute 'text'".into());
             };
             let n = doc.node_mut(parent);
-            n.text = Some(py_rstrip(n.text.as_deref().unwrap_or("")).to_owned() + &text);
+            n.text = Some((py_rstrip(n.text.as_deref().unwrap_or("")).to_owned() + &text).into());
         }
     }
     Ok(())
@@ -255,25 +256,28 @@ impl Applier<'_> {
                 before_text = rstrip_match(p.text.as_deref()).to_owned();
                 let new = py_rstrip(p.text.as_deref().unwrap_or("")).to_owned() + &text;
                 p.text = if new.is_empty() {
-                    spec_text.as_ref().map(|_| String::new())
+                    spec_text.as_ref().map(|_| XStr::new())
                 } else {
-                    Some(new)
+                    Some(new.into())
                 };
             }
             Some(prev) => {
                 let p = self.doc.node_mut(prev);
                 before_text = rstrip_match(p.tail.as_deref()).to_owned();
-                p.tail = Some(py_rstrip(p.tail.as_deref().unwrap_or("")).to_owned() + &text);
+                p.tail =
+                    Some((py_rstrip(p.tail.as_deref().unwrap_or("")).to_owned() + &text).into());
             }
         }
 
         let children = self.doc.node(spec).children.clone();
         if let Some(&last) = children.last() {
             let n = self.doc.node_mut(last);
-            n.tail = Some(py_rstrip(n.tail.as_deref().unwrap_or("")).to_owned() + &before_text);
+            n.tail =
+                Some((py_rstrip(n.tail.as_deref().unwrap_or("")).to_owned() + &before_text).into());
         } else {
             let n = self.doc.node_mut(spec);
-            n.text = Some(py_rstrip(n.text.as_deref().unwrap_or("")).to_owned() + &before_text);
+            n.text =
+                Some((py_rstrip(n.text.as_deref().unwrap_or("")).to_owned() + &before_text).into());
         }
 
         for mut child in children {
@@ -381,7 +385,7 @@ impl Applier<'_> {
             })
             .collect();
         for loc in locs {
-            self.doc.node_mut(loc).text = Some(String::new());
+            self.doc.node_mut(loc).text = Some(XStr::new());
             let copied = self.doc.deep_copy(node);
             if opts.inherit_branding {
                 self.doc.node_mut(copied).set("data-oe-no-branding", "1");
@@ -573,7 +577,7 @@ impl Applier<'_> {
                     out.join(separator.unwrap_or(" "))
                 }
             } else {
-                c.text.clone().unwrap_or_default()
+                c.text.as_deref().unwrap_or("").to_owned()
             };
             let n = self.doc.node_mut(node);
             if !value.is_empty() {
