@@ -7,6 +7,10 @@ version = "0.1.0"
 edition = "2024"
 license = "LGPL-3.0-only"
 rust-version = "1.88.0"
+repository = "https://github.com/DBosch0/qweb-rs"
+authors = ["David Bosch"]
+keywords = ["qweb", "template", "xpath", "odoo"]
+categories = ["template-engine", "web-programming"]
 
 [workspace.dependencies]
 qweb-core = { path = "crates/qweb-core", version = "0.1.0" }
