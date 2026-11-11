@@ -7,63 +7,194 @@
 use std::borrow::{Borrow, Cow};
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::mem::ManuallyDrop;
 use std::ops::Deref;
+use std::ptr::NonNull;
 
 /// Longest string stored inline.
-pub const INLINE: usize = 22;
+pub const INLINE: usize = 23;
 
 /// Immutable string, stored inline when short. Derefs to `str`.
-#[derive(Clone)]
-pub struct XStr(Repr);
-
-#[derive(Clone)]
-enum Repr {
-    /// `buf[..len]` is a copy of a whole `&str`, so it is valid UTF-8.
-    Inline {
-        len: u8,
-        buf: [u8; INLINE],
-    },
-    Heap(Box<str>),
+///
+/// Layout (24 bytes, no padding): 16 bytes that hold either the first inline
+/// bytes or the heap pointer and length, 7 more inline bytes, then a [`Tag`]
+/// byte that is the inline length or [`Tag::Heap`]. The tag is a `u8` enum
+/// with 25 values, so the other 231 values are a niche: `Option<XStr>` is
+/// also 24 bytes.
+#[repr(C)]
+pub struct XStr {
+    data: Data,
+    rest: [u8; INLINE - 16],
+    tag: Tag,
 }
+
+#[repr(C)]
+union Data {
+    /// Inline bytes `0..16` (`tag` is the length).
+    bytes: [u8; 16],
+    /// Exact-size heap string (`tag` is [`Tag::Heap`]), owned like a `Box<str>`.
+    heap: HeapStr,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct HeapStr {
+    ptr: NonNull<u8>,
+    len: usize,
+}
+
+/// Inline length (`L0`..`L23`) or `Heap`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+#[rustfmt::skip]
+enum Tag {
+    L0, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14, L15, L16,
+    L17, L18, L19, L20, L21, L22, L23, Heap,
+}
+
+/// Tag of each inline length.
+#[rustfmt::skip]
+const LENS: [Tag; INLINE + 1] = {
+    use Tag::*;
+    [L0, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14, L15, L16,
+     L17, L18, L19, L20, L21, L22, L23]
+};
 
 const _: () = assert!(std::mem::size_of::<XStr>() == 24);
 const _: () = assert!(std::mem::size_of::<Option<XStr>>() == 24);
+const _: () = assert!(std::mem::size_of::<Data>() == 16);
+const _: () = assert!(Tag::Heap as usize == INLINE + 1);
+
+// SAFETY: an `XStr` owns its heap string like a `Box<str>` (which is Send
+// and Sync), and never shares it.
+unsafe impl Send for XStr {}
+// SAFETY: see `Send`; `&XStr` only gives `&str` access.
+unsafe impl Sync for XStr {}
 
 impl XStr {
     /// The empty string.
     pub const fn new() -> Self {
-        XStr(Repr::Inline {
-            len: 0,
-            buf: [0; INLINE],
-        })
+        XStr {
+            data: Data { bytes: [0; 16] },
+            rest: [0; INLINE - 16],
+            tag: Tag::L0,
+        }
+    }
+
+    /// A short string, stored inline (`s.len() <= INLINE`).
+    #[inline]
+    fn inline(s: &str) -> Self {
+        debug_assert!(s.len() <= INLINE);
+        let mut raw = [0u8; INLINE];
+        raw[..s.len()].copy_from_slice(s.as_bytes());
+        let mut bytes = [0u8; 16];
+        bytes.copy_from_slice(&raw[..16]);
+        let mut rest = [0u8; INLINE - 16];
+        rest.copy_from_slice(&raw[16..]);
+        XStr {
+            data: Data { bytes },
+            rest,
+            tag: LENS[s.len()],
+        }
+    }
+
+    /// Take ownership of a heap string (any length).
+    fn heap(s: Box<str>) -> Self {
+        let len = s.len();
+        let ptr = Box::into_raw(s) as *mut u8;
+        XStr {
+            // SAFETY: `Box::into_raw` never returns null.
+            data: Data {
+                heap: HeapStr {
+                    ptr: unsafe { NonNull::new_unchecked(ptr) },
+                    len,
+                },
+            },
+            rest: [0; INLINE - 16],
+            tag: Tag::Heap,
+        }
+    }
+
+    #[inline]
+    fn is_inline(&self) -> bool {
+        self.tag != Tag::Heap
     }
 
     /// The string.
     #[inline]
     pub fn as_str(&self) -> &str {
-        match &self.0 {
-            Repr::Inline { len, buf } => {
-                // SAFETY: `buf[..len]` is only ever written by `XStr::from(&str)`,
-                // which copies a whole `&str` (see `Repr::Inline`).
-                unsafe { std::str::from_utf8_unchecked(&buf[..*len as usize]) }
+        if self.is_inline() {
+            let len = self.tag as usize;
+            // SAFETY: inline, `data.bytes` and `rest` are the first `INLINE`
+            // bytes of the `repr(C)` struct, contiguous and initialised (see
+            // `XStr::inline`), and `bytes[..len]` is a copy of a whole `&str`.
+            unsafe {
+                let bytes = std::slice::from_raw_parts(self as *const XStr as *const u8, len);
+                std::str::from_utf8_unchecked(bytes)
             }
-            Repr::Heap(s) => s,
+        } else {
+            // SAFETY: on the heap, `data.heap` is the live string taken from
+            // a `Box<str>` in `XStr::heap`.
+            unsafe {
+                let h = self.data.heap;
+                std::str::from_utf8_unchecked(std::slice::from_raw_parts(h.ptr.as_ptr(), h.len))
+            }
         }
     }
 
     /// Convert to a `Box<str>`.
     pub fn into_boxed_str(self) -> Box<str> {
-        match self.0 {
-            Repr::Heap(s) => s,
-            Repr::Inline { .. } => self.as_str().into(),
+        if self.is_inline() {
+            return self.as_str().into();
+        }
+        let this = ManuallyDrop::new(self);
+        // SAFETY: on the heap, `data.heap` came from `Box::into_raw` (see
+        // `XStr::heap`); `this` is not dropped, so the box is rebuilt once.
+        unsafe {
+            let h = this.data.heap;
+            Box::from_raw(std::ptr::slice_from_raw_parts_mut(h.ptr.as_ptr(), h.len) as *mut str)
         }
     }
 
     /// Convert to a `String`.
     pub fn into_string(self) -> String {
-        match self.0 {
-            Repr::Heap(s) => s.into_string(),
-            Repr::Inline { .. } => self.as_str().to_owned(),
+        if self.is_inline() {
+            self.as_str().to_owned()
+        } else {
+            self.into_boxed_str().into_string()
+        }
+    }
+}
+
+impl Drop for XStr {
+    fn drop(&mut self) {
+        if !self.is_inline() {
+            // SAFETY: on the heap, `data.heap` came from `Box::into_raw` and
+            // is released here only.
+            unsafe {
+                let h = self.data.heap;
+                drop(Box::from_raw(
+                    std::ptr::slice_from_raw_parts_mut(h.ptr.as_ptr(), h.len) as *mut str,
+                ));
+            }
+        }
+    }
+}
+
+impl Clone for XStr {
+    #[inline]
+    fn clone(&self) -> Self {
+        if self.is_inline() {
+            XStr {
+                // SAFETY: inline, `data.bytes` is the active, initialised field.
+                data: Data {
+                    bytes: unsafe { self.data.bytes },
+                },
+                rest: self.rest,
+                tag: self.tag,
+            }
+        } else {
+            XStr::heap(self.as_str().into())
         }
     }
 }
@@ -78,14 +209,9 @@ impl From<&str> for XStr {
     #[inline]
     fn from(s: &str) -> Self {
         if s.len() <= INLINE {
-            let mut buf = [0; INLINE];
-            buf[..s.len()].copy_from_slice(s.as_bytes());
-            XStr(Repr::Inline {
-                len: s.len() as u8,
-                buf,
-            })
+            XStr::inline(s)
         } else {
-            XStr(Repr::Heap(s.into()))
+            XStr::heap(s.into())
         }
     }
 }
@@ -95,7 +221,7 @@ impl From<String> for XStr {
         if s.len() <= INLINE {
             XStr::from(s.as_str())
         } else {
-            XStr(Repr::Heap(s.into_boxed_str()))
+            XStr::heap(s.into_boxed_str())
         }
     }
 }
@@ -111,7 +237,7 @@ impl From<Box<str>> for XStr {
         if s.len() <= INLINE {
             XStr::from(&*s)
         } else {
-            XStr(Repr::Heap(s))
+            XStr::heap(s)
         }
     }
 }
@@ -245,13 +371,29 @@ mod tests {
             assert_eq!(x.clone().into_string(), s);
             assert_eq!(x.len(), s.len());
         }
-        assert!(matches!(
-            XStr::from("x".repeat(INLINE)).0,
-            Repr::Inline { .. }
-        ));
-        assert!(matches!(
-            XStr::from("x".repeat(INLINE + 1)).0,
-            Repr::Heap(_)
-        ));
+        assert!(XStr::from("x".repeat(INLINE)).is_inline());
+        assert!(!XStr::from("x".repeat(INLINE + 1)).is_inline());
+    }
+
+    #[test]
+    fn every_length() {
+        // Inline and heap, cloned, converted and dropped (run under Miri).
+        let mut all = Vec::new();
+        for n in 0..=INLINE + 3 {
+            let s: String = "é".repeat(n / 2) + &"z".repeat(n % 2);
+            let x = XStr::from(s.as_str());
+            assert_eq!(x.as_str(), s);
+            assert_eq!(x.is_inline(), s.len() <= INLINE);
+            let y = x.clone();
+            assert_eq!(y, x);
+            assert_eq!(XStr::from(s.clone().into_boxed_str()), s);
+            assert_eq!(y.into_boxed_str().as_ref(), s);
+            all.push(Some(x));
+        }
+        all.push(None);
+        let copies = all.clone();
+        assert_eq!(all, copies);
+        let moved = std::thread::spawn(move || copies.len()).join().unwrap();
+        assert_eq!(moved, all.len());
     }
 }
