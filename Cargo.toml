@@ -6,6 +6,7 @@ members = ["crates/qweb-core", "crates/qweb-value", "crates/qweb-inherit", "crat
 version = "0.1.0"
 edition = "2024"
 license = "LGPL-3.0-only"
+rust-version = "1.88.0"
 
 [workspace.dependencies]
 qweb-core = { path = "crates/qweb-core", version = "0.1.0" }

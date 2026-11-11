@@ -44,6 +44,26 @@ jobs:
       - run: cargo doc --workspace --no-deps --locked
       - run: cargo doc --workspace --no-deps --document-private-items --locked
 
+  # Minimum supported Rust version: `rust-version` in the root Cargo.toml
+  # (let-chains need 1.88). Builds and tests with exactly that toolchain and
+  # the committed Cargo.lock, native and wasm32.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - id: msrv
+        run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-targets --locked
+      - run: cargo build -p qweb-core -p qweb-value -p qweb-wasm --target wasm32-unknown-unknown --locked
+
   # Rust unit tests and the native conformance cases on every major OS.
   test:
     name: test (${{ matrix.os }})
