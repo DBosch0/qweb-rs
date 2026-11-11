@@ -108,7 +108,7 @@ impl TemplateStore {
     /// Qualified tag name of element `h`.
     #[wasm_bindgen(js_name = tagName)]
     pub fn tag_name(&self, h: u32) -> Result<String, JsError> {
-        Ok(self.dom.node(self.check(h)?).name.clone())
+        Ok(self.dom.node(self.check(h)?).name.to_string())
     }
 
     /// `getAttribute(name)` of element `h`.

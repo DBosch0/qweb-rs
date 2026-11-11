@@ -12,7 +12,7 @@
 
 use core::{error, fmt};
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 pub use crate::xstr::XStr;
 
@@ -35,6 +35,12 @@ pub enum NodeKind {
 
 /// In-scope namespace map, `(prefix, uri)`; `None` is the default namespace.
 pub type NsMap = Arc<Vec<(Option<String>, String)>>;
+
+/// The empty namespace map, shared (cloning it does not allocate).
+pub fn empty_nsmap() -> NsMap {
+    static EMPTY: OnceLock<NsMap> = OnceLock::new();
+    EMPTY.get_or_init(|| Arc::new(Vec::new())).clone()
+}
 
 /// A node of a [`Document`].
 #[derive(Clone)]
@@ -186,7 +192,7 @@ impl Document {
             tag: tag.into(),
             prefix: None,
             attrs,
-            nsmap: Arc::new(Vec::new()),
+            nsmap: empty_nsmap(),
             text: None,
             tail: None,
             children: Vec::new(),
@@ -734,7 +740,7 @@ impl<'a> Parser<'a> {
         if !self.starts_with("<") {
             return self.err("Start tag expected, '<' not found");
         }
-        let root_ns: NsMap = Arc::new(Vec::new());
+        let root_ns: NsMap = empty_nsmap();
         let root = self.parse_element(None, &root_ns)?;
         // Trailing misc is ignored (like lxml.fromstring, which only returns the root).
         Ok(Document {

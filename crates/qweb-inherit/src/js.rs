@@ -3,6 +3,7 @@
 
 use crate::dom::{DNode, Dom, DomError, DomId, DomKind, XHTML_NS, json_str};
 use crate::xpath::{Dialect, XPath};
+use qweb_core::xml::XStr;
 
 const TCTX: &str = "t-translation-context";
 
@@ -226,7 +227,7 @@ impl JsInheritance {
         }
         let op = dom.node(operation);
         let tag = op.name.clone();
-        let attrs: Vec<(String, String)> = op
+        let attrs: Vec<(XStr, XStr)> = op
             .attrs
             .iter()
             .filter(|a| !a.qname.starts_with(TCTX))
@@ -297,7 +298,7 @@ impl JsInheritance {
             && dom.node(prev).kind == DomKind::Text
         {
             let (text1, text2) = split_rstrip(&dom.node(prev).data);
-            dom.node_mut(prev).data = trim_end(&text1);
+            dom.node_mut(prev).data = trim_end(&text1).into();
             if let Some(text2) = text2
                 && !text2.is_empty()
                 && nodes.iter().any(|&n| dom.node(n).kind != DomKind::Text)
@@ -308,7 +309,7 @@ impl JsInheritance {
                     && dom.node(p).kind == DomKind::Text
                 {
                     let t = trim_end(&dom.node(p).data);
-                    dom.node_mut(p).data = t;
+                    dom.node_mut(p).data = t.into();
                 }
             }
         }
@@ -358,7 +359,7 @@ impl JsInheritance {
                         .map(trim)
                         .filter(|s| !s.is_empty()),
                 );
-                value = values.join(&separator);
+                value = values.join(&separator).into();
             }
             let ctx = self.translation_context.clone();
             let t = dom.node_mut(target);
@@ -556,7 +557,7 @@ fn remove_node(dom: &mut Dom, node: DomId) {
             .is_some_and(|pp| dom.node(pp).children.first() == Some(&p))
     {
         let t = trim_end(&dom.node(p).data);
-        dom.node_mut(p).data = t;
+        dom.node_mut(p).data = t.into();
     }
 }
 

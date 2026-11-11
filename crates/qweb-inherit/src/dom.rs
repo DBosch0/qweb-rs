@@ -6,7 +6,7 @@
 
 use core::hash::Hash;
 
-use qweb_core::xml::{Document, NodeKind, XML_NS, local_name, namespace};
+use qweb_core::xml::{Document, NodeKind, XML_NS, XStr, local_name, namespace};
 
 use crate::xpath::{Kind, Tree};
 
@@ -35,11 +35,11 @@ pub enum DomKind {
 /// An attribute (`Attr`).
 pub struct DomAttr {
     /// Qualified name, as written (`prefix:local`).
-    pub qname: String,
+    pub qname: XStr,
     /// Namespace URI (`null` when created by `setAttribute`).
     pub ns: Option<String>,
     /// Attribute value.
-    pub value: String,
+    pub value: XStr,
 }
 
 #[derive(Debug, Clone)]
@@ -48,13 +48,13 @@ pub struct DomNode {
     /// Node type.
     pub kind: DomKind,
     /// Element qualified name, PI target.
-    pub name: String,
+    pub name: XStr,
     /// Element namespace URI.
     pub ns: Option<String>,
     /// Element attributes, in order.
     pub attrs: Vec<DomAttr>,
     /// Text, comment or PI data.
-    pub data: String,
+    pub data: XStr,
     /// Translation context of a text node (`contextByTextNode`).
     pub tctx: Option<String>,
     /// Child nodes, in order.
@@ -70,10 +70,10 @@ impl DomNode {
     fn new(kind: DomKind) -> DomNode {
         DomNode {
             kind,
-            name: String::new(),
+            name: XStr::new(),
             ns: None,
             attrs: Vec::new(),
-            data: String::new(),
+            data: XStr::new(),
             tctx: None,
             children: Vec::new(),
             parent: None,
@@ -101,12 +101,12 @@ impl DomNode {
     }
 
     /// `setAttribute(qname, value)` (null namespace when created).
-    pub fn set(&mut self, qname: &str, value: impl Into<String>) {
+    pub fn set(&mut self, qname: &str, value: impl Into<XStr>) {
         let value = value.into();
         match self.attrs.iter_mut().find(|a| a.qname == qname) {
             Some(a) => a.value = value,
             None => self.attrs.push(DomAttr {
-                qname: qname.to_owned(),
+                qname: qname.into(),
                 ns: None,
                 value,
             }),
@@ -181,7 +181,7 @@ impl Dom {
     /// `createElementNS(ns, qname)`: a detached element.
     pub fn create_element(&mut self, qname: &str, ns: Option<&str>) -> DomId {
         let mut n = DomNode::new(DomKind::Element);
-        n.name = qname.to_owned();
+        n.name = qname.into();
         n.ns = ns.map(str::to_owned);
         self.alloc(n)
     }
@@ -189,14 +189,14 @@ impl Dom {
     /// `createTextNode(data)`.
     pub fn create_text(&mut self, data: &str) -> DomId {
         let mut n = DomNode::new(DomKind::Text);
-        n.data = data.to_owned();
+        n.data = data.into();
         self.alloc(n)
     }
 
     /// `createComment(data)`.
     pub fn create_comment(&mut self, data: &str) -> DomId {
         let mut n = DomNode::new(DomKind::Comment);
-        n.data = data.to_owned();
+        n.data = data.into();
         self.alloc(n)
     }
 
@@ -268,57 +268,73 @@ impl Dom {
     ) -> DomId {
         let src = doc.node(id);
         match src.kind {
-            NodeKind::Comment => self.create_comment(src.text.as_deref().unwrap_or("")),
+            NodeKind::Comment => {
+                let mut n = DomNode::new(DomKind::Comment);
+                n.data = src.text.clone().unwrap_or_default();
+                self.alloc(n)
+            }
             NodeKind::Pi => {
                 let mut n = DomNode::new(DomKind::Pi);
-                n.name = src.tag.to_string();
-                n.data = src.text.as_deref().unwrap_or("").to_owned();
+                n.name = src.tag.clone();
+                n.data = src.text.clone().unwrap_or_default();
                 self.alloc(n)
             }
             NodeKind::Element => {
                 let ns = namespace(&src.tag).map(str::to_owned);
                 let local = local_name(&src.tag);
-                let qname = match (&ns, &src.prefix) {
-                    (Some(_), Some(p)) => format!("{p}:{local}"),
-                    _ => local.to_owned(),
+                let qname: XStr = match (&ns, &src.prefix) {
+                    (Some(_), Some(p)) => format!("{p}:{local}").into(),
+                    // the tag itself when it has no namespace (no copy for short tags)
+                    _ if ns.is_none() => src.tag.clone(),
+                    _ => local.into(),
                 };
                 let mut n = DomNode::new(DomKind::Element);
                 n.name = qname;
                 n.ns = ns;
+                n.attrs.reserve_exact(src.attrs.len());
                 for (prefix, uri) in src.nsmap.iter() {
                     let inherited =
                         parent_ns.is_some_and(|p| p.iter().any(|(q, u)| q == prefix && u == uri));
                     if !inherited {
-                        let qname = match prefix {
-                            Some(p) => format!("xmlns:{p}"),
-                            None => "xmlns".to_owned(),
+                        let qname: XStr = match prefix {
+                            Some(p) => format!("xmlns:{p}").into(),
+                            None => "xmlns".into(),
                         };
                         n.attrs.push(DomAttr {
                             qname,
                             ns: Some(XMLNS_NS.into()),
-                            value: uri.clone(),
+                            value: uri.as_str().into(),
                         });
                     }
                 }
                 for (k, v) in &src.attrs {
                     let ans = namespace(k);
                     let local = local_name(k);
-                    let qname = match ans {
-                        Some(XML_NS) => format!("xml:{local}"),
+                    let qname: XStr = match ans {
+                        Some(XML_NS) => format!("xml:{local}").into(),
                         Some(uri) => {
                             match src.nsmap.iter().find(|(q, u)| q.is_some() && u == uri) {
-                                Some((Some(p), _)) => format!("{p}:{local}"),
-                                _ => local.to_owned(),
+                                Some((Some(p), _)) => format!("{p}:{local}").into(),
+                                _ => local.into(),
                             }
                         }
-                        None => local.to_owned(),
+                        // no namespace: the name is the key itself
+                        None => k.clone(),
                     };
                     n.attrs.push(DomAttr {
                         qname,
                         ns: ans.map(str::to_owned),
-                        value: v.to_string(),
+                        value: v.clone(),
                     });
                 }
+                // children: the text, each child and its tail
+                let kids = usize::from(src.text.is_some())
+                    + src
+                        .children
+                        .iter()
+                        .map(|&c| 1 + usize::from(doc.node(c).tail.is_some()))
+                        .sum::<usize>();
+                n.children.reserve_exact(kids);
                 let el = self.alloc(n);
                 if let Some(t) = &src.text {
                     let t = self.create_text(t);
@@ -788,8 +804,8 @@ impl Tree for Dom {
 
     fn qname(&self, n: DNode) -> String {
         match n {
-            DNode::Node(id) => self.nodes[id].name.clone(),
-            DNode::Attr(id, i) => self.nodes[id].attrs[i as usize].qname.clone(),
+            DNode::Node(id) => self.nodes[id].name.to_string(),
+            DNode::Attr(id, i) => self.nodes[id].attrs[i as usize].qname.to_string(),
             DNode::Doc(_) => String::new(),
         }
     }

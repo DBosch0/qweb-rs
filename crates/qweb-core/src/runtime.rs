@@ -26,7 +26,7 @@ const MAX_DEPTH: usize = 49;
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct SourceKey {
     source: Arc<str>,
-    opts: CompileOptions,
+    opts: Arc<CompileOptions>,
     xmlid: Option<String>,
     viewid: String,
 }
@@ -41,7 +41,7 @@ type Cache<K, H> = RwLock<HashMap<K, Arc<Program<H>>>>;
 pub struct Engine<H: Host> {
     host: H,
     /// Cache by template reference (used when `trust_names` is set).
-    by_name: Cache<(TemplateRef, CompileOptions), H>,
+    by_name: Cache<(TemplateRef, Arc<CompileOptions>), H>,
     /// Cache by template source.
     by_source: Cache<SourceKey, H>,
     /// Reuse compiled templates by name without calling the loader again.
@@ -116,6 +116,8 @@ impl<H: Host> Engine<H> {
             h: &self.host,
             depth: 1,
             memo: Vec::new(),
+            attr_pool: Default::default(),
+            scratch: String::new(),
         };
         r.run_program(program, scope, ctx, &mut out)?;
         program
@@ -262,6 +264,8 @@ impl<H: Host> Lazy<H> {
             h: &self.engine.host,
             depth: 1,
             memo: Vec::new(),
+            attr_pool: Default::default(),
+            scratch: String::new(),
         };
         r.render_lazy_body(self, &mut out)
             .map_err(|e| e.with_frame(err_frame(&self.program, &self.loc)))?;
@@ -306,21 +310,12 @@ impl<H: Host> Clone for AttrVal<H> {
 /// Ordered attribute dict (Python dict semantics: a later value for an
 /// existing name replaces it in place).
 pub(crate) struct AttrMap<H: Host> {
-    items: Vec<(Arc<str>, AttrVal<H>)>,
+    items: AttrItems<H>,
 }
 
-impl<H: Host> Clone for AttrMap<H> {
-    fn clone(&self) -> Self {
-        AttrMap {
-            items: self.items.clone(),
-        }
-    }
-}
+type AttrItems<H> = Vec<(Arc<str>, AttrVal<H>)>;
 
 impl<H: Host> AttrMap<H> {
-    fn new() -> Self {
-        AttrMap { items: Vec::new() }
-    }
     fn set(&mut self, name: Arc<str>, value: AttrVal<H>) {
         if let Some(slot) = self.items.iter_mut().find(|(n, _)| **n == *name) {
             slot.1 = value;
@@ -348,7 +343,12 @@ struct Renderer<'e, H: Host> {
     h: &'e H,
     depth: usize,
     /// Programs used during this render (like `process['qweb_loaded_functions']`).
-    memo: Vec<(TemplateRef, CompileOptions, Arc<Program<H>>)>,
+    memo: Vec<(TemplateRef, Arc<CompileOptions>, Arc<Program<H>>)>,
+    /// Emptied attribute lists, reused by the next elements (a few are
+    /// enough: attributes are rendered when their tag opens).
+    attr_pool: [Option<AttrItems<H>>; 4],
+    /// Scratch buffer for attribute names and values.
+    scratch: String,
 }
 
 fn err_frame<H: Host>(prog: &Program<H>, loc: &Loc) -> crate::Frame {
@@ -361,6 +361,73 @@ fn err_frame<H: Host>(prog: &Program<H>, loc: &Loc) -> crate::Frame {
     }
 }
 
+/// `_render_attributes` (with the base `_post_processing_att`); `buf` is
+/// scratch space.
+fn write_attributes<H: Host>(
+    h: &H,
+    ctx: &H::Context,
+    tag: &str,
+    attrs: &mut AttrMap<H>,
+    buf: &mut String,
+    out: &mut String,
+) -> Result<()> {
+    if h.custom_post_processing(ctx) {
+        let items = std::mem::take(&mut attrs.items);
+        for (name, value) in h.post_processing_att(ctx, tag, items)? {
+            if !(h.is_str(&value) || h.truthy(&value)?) {
+                continue;
+            }
+            buf.clear();
+            h.write_str(&name, buf)?;
+            out.push(' ');
+            escape_into(out, buf);
+            out.push_str("=\"");
+            buf.clear();
+            h.write_str(&value, buf)?;
+            escape_into(out, buf);
+            out.push('"');
+        }
+        return Ok(());
+    }
+    // `_post_processing_att`: neutralise javascript: URLs in href.
+    if let Some(idx) = attrs.items.iter().position(|(n, _)| &**n == "href") {
+        let malicious = match &attrs.items[idx].1 {
+            AttrVal::Static(s) => crate::url::is_malicious_href(s),
+            AttrVal::Text(s) => crate::url::is_malicious_href(s),
+            AttrVal::Value(v) => {
+                buf.clear();
+                if h.truthy(v)? {
+                    h.write_str(v, buf)?;
+                }
+                crate::url::is_malicious_href(buf)
+            }
+        };
+        if malicious {
+            attrs.items[idx].1 = AttrVal::Static(Arc::from(""));
+        }
+    }
+    for (name, value) in &attrs.items {
+        let text: &str = match value {
+            AttrVal::Static(s) => s,
+            AttrVal::Text(s) => s,
+            AttrVal::Value(v) => {
+                if !(h.is_str(v) || h.truthy(v)?) {
+                    continue;
+                }
+                buf.clear();
+                h.write_str(v, buf)?;
+                buf
+            }
+        };
+        out.push(' ');
+        escape_into(out, name);
+        out.push_str("=\"");
+        escape_into(out, text);
+        out.push('"');
+    }
+    Ok(())
+}
+
 /// Set the error location (innermost element) if not set yet.
 fn locate<H: Host>(err: Error, prog: &Program<H>, loc: &Loc) -> Error {
     if err.has_location() {
@@ -371,6 +438,32 @@ fn locate<H: Host>(err: Error, prog: &Program<H>, loc: &Loc) -> Error {
 }
 
 impl<'e, H: Host> Renderer<'e, H> {
+    /// An empty attribute map, reusing a recycled list when there is one.
+    fn new_attrs(&mut self) -> AttrMap<H> {
+        let items = self.attr_pool.iter_mut().find_map(Option::take);
+        AttrMap {
+            items: items.unwrap_or_default(),
+        }
+    }
+
+    /// Give back the list of an attribute map that is no longer used.
+    fn recycle_attrs(&mut self, attrs: Option<AttrMap<H>>) {
+        if let Some(mut a) = attrs
+            && a.items.capacity() > 0
+            && let Some(slot) = self.attr_pool.iter_mut().find(|s| s.is_none())
+        {
+            a.items.clear();
+            *slot = Some(a.items);
+        }
+    }
+
+    /// `str(k)` as an attribute name (one allocation, through the scratch buffer).
+    fn attr_name(&mut self, k: &H::Value) -> Result<Arc<str>> {
+        self.scratch.clear();
+        self.h.write_str(k, &mut self.scratch)?;
+        Ok(Arc::from(self.scratch.as_str()))
+    }
+
     fn push_depth(&mut self) -> Result<()> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
@@ -566,7 +659,11 @@ impl<'e, H: Host> Renderer<'e, H> {
                     .map_err(|e| locate(e, prog, loc))?;
                     frame.options = Some(v);
                 }
-                Stmt::AttrsInit => frame.attrs = Some(AttrMap::new()),
+                Stmt::AttrsInit => {
+                    let attrs = self.new_attrs();
+                    let old = frame.attrs.replace(attrs);
+                    self.recycle_attrs(old);
+                }
                 Stmt::AttrSet { name, value, loc } => {
                     let v = match value {
                         AttrSrc::Static(s) => AttrVal::Static(s.clone()),
@@ -580,21 +677,22 @@ impl<'e, H: Host> Renderer<'e, H> {
                                 .map_err(|e| locate(e, prog, loc))?,
                         ),
                     };
-                    frame
-                        .attrs
-                        .get_or_insert_with(AttrMap::new)
-                        .set(name.clone(), v);
+                    if frame.attrs.is_none() {
+                        frame.attrs = Some(self.new_attrs());
+                    }
+                    frame.attrs.as_mut().unwrap().set(name.clone(), v);
                 }
                 Stmt::AttrUpdate { value, loc } => {
                     let v = self
                         .eval(value, &frame.scope)
                         .map_err(|e| locate(e, prog, loc))?;
                     if let Some(pairs) = h.pairs(&v).map_err(|e| locate(e, prog, loc))? {
-                        let attrs = frame.attrs.get_or_insert_with(AttrMap::new);
+                        if frame.attrs.is_none() {
+                            frame.attrs = Some(self.new_attrs());
+                        }
                         for (k, val) in pairs {
-                            let mut name = String::new();
-                            h.write_str(&k, &mut name)?;
-                            attrs.set(Arc::from(name), AttrVal::Value(val));
+                            let name = self.attr_name(&k)?;
+                            frame.attrs.as_mut().unwrap().set(name, AttrVal::Value(val));
                         }
                     }
                 }
@@ -604,6 +702,7 @@ impl<'e, H: Host> Renderer<'e, H> {
                             frame.attrs = Some(attrs);
                         } else {
                             self.render_attributes(&frame.ctx, tag, &mut attrs, out)?;
+                            self.recycle_attrs(Some(attrs));
                         }
                     }
                 }
@@ -644,21 +743,27 @@ impl<'e, H: Host> Renderer<'e, H> {
             Err(n) => h.iterate(h.int(*n)).map_err(loc_err)?,
             Ok(e) => {
                 let v = self.eval(e, &frame.scope).map_err(loc_err)?;
-                let v = if h.truthy(&v).map_err(loc_err)? {
-                    v
-                } else {
-                    h.list(Vec::new())
-                };
+                if !h.truthy(&v).map_err(loc_err)? {
+                    // A falsy value iterates `[]`: only the size is set.
+                    h.scope_set(&mut frame.scope, &f.size, h.int(0));
+                    return Ok(());
+                }
                 h.iterate(v).map_err(loc_err)?
             }
         };
         if let Some(n) = src.size {
             h.scope_set(&mut frame.scope, &f.size, h.int(n as i64));
         }
-        let saved = frame.attrs.clone();
+        let saved = frame.attrs.take();
         for (index, item) in src.iter.enumerate() {
             let item = item.map_err(loc_err)?;
-            frame.attrs = saved.clone();
+            let attrs = saved.as_ref().map(|s| {
+                let mut a = self.new_attrs();
+                a.items.extend(s.items.iter().cloned());
+                a
+            });
+            let old = std::mem::replace(&mut frame.attrs, attrs);
+            self.recycle_attrs(old);
             let scope = &mut frame.scope;
             h.scope_set(scope, &f.index, h.int(index as i64));
             if src.mapping {
@@ -686,8 +791,10 @@ impl<'e, H: Host> Renderer<'e, H> {
                 },
             );
             self.run(prog, &f.body, frame, out)?;
-            frame.attrs = None;
+            let old = frame.attrs.take();
+            self.recycle_attrs(old);
         }
+        self.recycle_attrs(saved);
         Ok(())
     }
 
@@ -728,19 +835,22 @@ impl<'e, H: Host> Renderer<'e, H> {
                     &frame.scope,
                 )?,
             };
-            let mut new_attrs = AttrMap::new();
+            let mut new_attrs = self.new_attrs();
             for (k, v) in r.attrs {
-                let mut name = String::new();
-                h.write_str(&k, &mut name)?;
-                new_attrs.set(Arc::from(name), AttrVal::Value(v));
+                let name = self.attr_name(&k)?;
+                new_attrs.set(name, AttrVal::Value(v));
             }
             match (&mut frame.attrs, conv.merge) {
                 (Some(existing), true) => {
-                    for (k, v) in new_attrs.items {
+                    for (k, v) in new_attrs.items.drain(..) {
                         existing.set(k, v);
                     }
+                    self.recycle_attrs(Some(new_attrs));
                 }
-                _ => frame.attrs = Some(new_attrs),
+                _ => {
+                    let old = frame.attrs.replace(new_attrs);
+                    self.recycle_attrs(old);
+                }
             }
             content = r.content;
             force_display = r.force_display;
@@ -769,7 +879,8 @@ impl<'e, H: Host> Renderer<'e, H> {
                         self.run(prog, &o.tag_open, frame, out)?;
                         self.run(prog, &o.tag_close, frame, out)?;
                     } else {
-                        frame.attrs = None;
+                        let old = frame.attrs.take();
+                        self.recycle_attrs(old);
                     }
                 }
                 Otherwise::Nothing => {}
@@ -854,13 +965,13 @@ impl<'e, H: Host> Renderer<'e, H> {
             }
             out.push('<');
             out.push_str(&tag);
-            let mut map = AttrMap::new();
+            let mut map = self.new_attrs();
             for (k, v) in attrs {
-                let mut name = String::new();
-                h.write_str(&k, &mut name)?;
-                map.set(Arc::from(name), AttrVal::Value(v));
+                let name = self.attr_name(&k)?;
+                map.set(name, AttrVal::Value(v));
             }
             self.render_attributes(&frame.ctx, &tag, &mut map, out)?;
+            self.recycle_attrs(Some(map));
             if is_void(&tag) {
                 out.push_str("/>");
             } else {
@@ -880,64 +991,10 @@ impl<'e, H: Host> Renderer<'e, H> {
         attrs: &mut AttrMap<H>,
         out: &mut String,
     ) -> Result<()> {
-        let h = self.h;
-        if h.custom_post_processing(ctx) {
-            let items = std::mem::take(&mut attrs.items);
-            let mut buf = String::new();
-            for (name, value) in h.post_processing_att(ctx, tag, items)? {
-                if !(h.is_str(&value) || h.truthy(&value)?) {
-                    continue;
-                }
-                buf.clear();
-                h.write_str(&name, &mut buf)?;
-                out.push(' ');
-                escape_into(out, &buf);
-                out.push_str("=\"");
-                buf.clear();
-                h.write_str(&value, &mut buf)?;
-                escape_into(out, &buf);
-                out.push('"');
-            }
-            return Ok(());
-        }
-        // `_post_processing_att`: neutralise javascript: URLs in href.
-        if let Some(idx) = attrs.items.iter().position(|(n, _)| &**n == "href") {
-            let href = match &attrs.items[idx].1 {
-                AttrVal::Static(s) => s.to_string(),
-                AttrVal::Text(s) => s.clone(),
-                AttrVal::Value(v) => {
-                    let mut s = String::new();
-                    if h.truthy(v)? {
-                        h.write_str(v, &mut s)?;
-                    }
-                    s
-                }
-            };
-            if crate::url::is_malicious_href(&href) {
-                attrs.items[idx].1 = AttrVal::Static(Arc::from(""));
-            }
-        }
-        let mut buf = String::new();
-        for (name, value) in &attrs.items {
-            let text: &str = match value {
-                AttrVal::Static(s) => s,
-                AttrVal::Text(s) => s,
-                AttrVal::Value(v) => {
-                    if !(h.is_str(v) || h.truthy(v)?) {
-                        continue;
-                    }
-                    buf.clear();
-                    h.write_str(v, &mut buf)?;
-                    &buf
-                }
-            };
-            out.push(' ');
-            escape_into(out, name);
-            out.push_str("=\"");
-            escape_into(out, text);
-            out.push('"');
-        }
-        Ok(())
+        let mut buf = std::mem::take(&mut self.scratch);
+        let res = write_attributes(self.h, ctx, tag, attrs, &mut buf, out);
+        self.scratch = buf;
+        res
     }
 
     // ----- expressions -------------------------------------------------------
@@ -950,7 +1007,16 @@ impl<'e, H: Host> Renderer<'e, H> {
                 Ok(s)
             }
             Format::Parts(parts) => {
-                let mut s = String::new();
+                // Room for the literals plus a short value per expression,
+                // so that most strings need a single allocation.
+                let cap = parts
+                    .iter()
+                    .map(|p| match p {
+                        FormatPart::Lit(l) => l.len(),
+                        FormatPart::Expr(_) => 16,
+                    })
+                    .sum();
+                let mut s = String::with_capacity(cap);
                 for p in parts {
                     match p {
                         FormatPart::Lit(l) => s.push_str(l),

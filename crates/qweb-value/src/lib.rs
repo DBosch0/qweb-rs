@@ -18,7 +18,7 @@ pub mod ops;
 pub mod value;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use indexmap::IndexMap;
 use qweb_core::expr::{BinOp, CmpOp, UnOp};
@@ -38,6 +38,9 @@ pub struct Context {
     pub options: Arc<IndexMap<String, Value>>,
     /// Namespaces inherited from the calling template.
     pub nsmap: Option<NsMap>,
+    /// Compile options derived from `options` and `nsmap`, computed on first
+    /// use. Build a new context rather than changing those fields afterwards.
+    compile: OnceLock<Arc<CompileOptions>>,
 }
 
 impl Context {
@@ -46,6 +49,7 @@ impl Context {
         Context {
             options: Arc::new(options.into_iter().collect()),
             nsmap: None,
+            compile: OnceLock::new(),
         }
     }
 }
@@ -64,6 +68,8 @@ struct HostInner {
     warnings: Mutex<Vec<String>>,
     /// [`SLOT_KEY`], allocated once.
     slot: Arc<str>,
+    /// The empty string, shared.
+    empty: Arc<str>,
 }
 
 /// Key of `values[0]` (the t-call body); not reachable from expressions.
@@ -76,6 +82,30 @@ impl Default for ValueHost {
 }
 
 impl ValueHost {
+    /// Compile options of a context (cached in [`Context`]).
+    fn make_compile_options(ctx: &Context) -> CompileOptions {
+        let truthy = |k: &str| {
+            ctx.options
+                .get(k)
+                .map(|v| v.truthy().unwrap_or(false))
+                .unwrap_or(false)
+        };
+        let mut extra = Vec::new();
+        if let Some(lang) = ctx.options.get("lang") {
+            extra.push(format!("lang={}", lang.repr()));
+        }
+        CompileOptions {
+            preserve_comments: truthy("preserve_comments"),
+            edit_translations: truthy("edit_translations"),
+            dev_mode: false,
+            nsmap: ctx
+                .nsmap
+                .clone()
+                .unwrap_or_else(qweb_core::xml::empty_nsmap),
+            extra,
+        }
+    }
+
     fn build(loader: Option<Box<LoaderFn>>) -> Self {
         ValueHost {
             inner: Arc::new(HostInner {
@@ -83,6 +113,7 @@ impl ValueHost {
                 loader,
                 warnings: Mutex::new(Vec::new()),
                 slot: Arc::from(SLOT_KEY),
+                empty: Arc::from(""),
             }),
         }
     }
@@ -223,6 +254,9 @@ impl Host for ValueHost {
         Value::Float(f)
     }
     fn str(&self, s: &str) -> Value {
+        if s.is_empty() {
+            return Value::Str(self.inner.empty.clone());
+        }
         Value::str(s)
     }
     fn markup(&self, s: &str) -> Value {
@@ -405,6 +439,8 @@ impl Host for ValueHost {
             Value::Markup(s) => out.push_str(s),
             Value::Lazy(l) => out.push_str(l.render()?),
             Value::Str(s) => qweb_core::escape::escape_into(out, s),
+            // Their text never contains a character to escape.
+            Value::None | Value::Bool(_) | Value::Int(_) | Value::Float(_) => v.write_repr(out),
             other => qweb_core::escape::escape_into(out, &other.to_str()?),
         }
         Ok(())
@@ -420,12 +456,12 @@ impl Host for ValueHost {
                     .collect();
                 (LoopIter::Items(items.into_iter()), Some(d.len()), true)
             }
-            Value::List(_)
-            | Value::Tuple(_)
-            | Value::Set(_)
-            | Value::Str(_)
-            | Value::Markup(_)
-            | Value::Bytes(_) => {
+            Value::List(items) | Value::Tuple(items) | Value::Set(items) => {
+                // Iterate the shared list (a snapshot: lists are never changed in place).
+                let n = items.len();
+                (LoopIter::Seq(items.clone(), 0), Some(n), false)
+            }
+            Value::Str(_) | Value::Markup(_) | Value::Bytes(_) => {
                 let items = v.iter_items()?;
                 let n = items.len();
                 (LoopIter::Items(items.into_iter()), Some(n), false)
@@ -469,28 +505,24 @@ impl Host for ValueHost {
         }
     }
 
-    fn compile_options(&self, ctx: &Context) -> CompileOptions {
-        let truthy = |k: &str| {
-            ctx.options
-                .get(k)
-                .map(|v| v.truthy().unwrap_or(false))
-                .unwrap_or(false)
-        };
-        let mut extra = Vec::new();
-        if let Some(lang) = ctx.options.get("lang") {
-            extra.push(format!("lang={}", lang.repr()));
-        }
-        CompileOptions {
-            preserve_comments: truthy("preserve_comments"),
-            edit_translations: truthy("edit_translations"),
-            dev_mode: false,
-            nsmap: ctx
-                .nsmap
-                .as_ref()
-                .map(|n| (**n).clone())
-                .unwrap_or_default(),
-            extra,
-        }
+    fn compile_options(&self, ctx: &Context) -> Arc<CompileOptions> {
+        static DEFAULT: OnceLock<Arc<CompileOptions>> = OnceLock::new();
+        ctx.compile
+            .get_or_init(|| {
+                let opts = Self::make_compile_options(ctx);
+                let default = DEFAULT.get_or_init(|| {
+                    Arc::new(CompileOptions {
+                        nsmap: qweb_core::xml::empty_nsmap(),
+                        ..Default::default()
+                    })
+                });
+                if opts == **default {
+                    default.clone()
+                } else {
+                    Arc::new(opts)
+                }
+            })
+            .clone()
     }
     fn call_context(
         &self,
@@ -507,6 +539,7 @@ impl Host for ValueHost {
         Ok(Context {
             options: Arc::new(opts),
             nsmap: nsmap.cloned().or_else(|| ctx.nsmap.clone()),
+            compile: OnceLock::new(),
         })
     }
     fn load(&self, template: &TemplateRef, _ctx: &Context) -> Result<Loaded<Self>> {
@@ -538,6 +571,8 @@ pub enum LoopIter {
     Range(std::ops::Range<i64>),
     /// Items collected from an iterable.
     Items(std::vec::IntoIter<Value>),
+    /// Items of a list, tuple or set, and the next index.
+    Seq(Arc<Vec<Value>>, usize),
 }
 
 impl Iterator for LoopIter {
@@ -547,6 +582,11 @@ impl Iterator for LoopIter {
         match self {
             LoopIter::Range(r) => r.next().map(|i| Ok(Value::Int(i))),
             LoopIter::Items(it) => it.next().map(Ok),
+            LoopIter::Seq(items, i) => {
+                let v = items.get(*i)?.clone();
+                *i += 1;
+                Some(Ok(v))
+            }
         }
     }
 
@@ -554,6 +594,10 @@ impl Iterator for LoopIter {
         match self {
             LoopIter::Range(r) => r.size_hint(),
             LoopIter::Items(it) => it.size_hint(),
+            LoopIter::Seq(items, i) => {
+                let n = items.len() - *i;
+                (n, Some(n))
+            }
         }
     }
 }

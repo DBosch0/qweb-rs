@@ -103,7 +103,7 @@ pub struct CompileOptions {
     /// Developer mode (`t-debug` is allowed without a warning).
     pub dev_mode: bool,
     /// Namespaces inherited from the caller (`t-call` inside namespaced XML).
-    pub nsmap: Vec<(Option<String>, String)>,
+    pub nsmap: NsMap,
     /// Extra host-defined cache key parts (e.g. `lang`).
     pub extra: Vec<String>,
 }
@@ -303,8 +303,8 @@ pub trait Host: Sized + Send + Sync + 'static {
 
     // ----- context and loading ---------------------------------------------
     /// Compile options for a context. Called for every template lookup, so
-    /// it should be cheap.
-    fn compile_options(&self, ctx: &Self::Context) -> CompileOptions;
+    /// it should be cheap: compute them once per context and share them.
+    fn compile_options(&self, ctx: &Self::Context) -> Arc<CompileOptions>;
     /// Context for a `t-call`: `ctx` updated with the `t-options` dict and
     /// the namespaces of the caller.
     fn call_context(

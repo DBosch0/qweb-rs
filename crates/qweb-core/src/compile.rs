@@ -9,6 +9,7 @@
 //! compiles templates as they are loaded. Custom directives
 //! ([`Host::compile_directive`]) see it through [`CompileApi`].
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use crate::error::{Error, ErrorKind, Result};
@@ -207,12 +208,68 @@ struct Cx {
 
 type Code<H> = Vec<Stmt<H>>;
 
+/// Pending static text (`_text_concat`). The chunks are stored back to
+/// back: `_rstrip_text` only touches the last chunk, so only its start is
+/// kept.
+#[derive(Default)]
+struct TextBuf {
+    buf: String,
+    /// Start of the last chunk, `None` when there is no chunk.
+    last: Option<usize>,
+}
+
+impl TextBuf {
+    /// Add a chunk.
+    fn push(&mut self, s: &str) {
+        self.last = Some(self.buf.len());
+        self.buf.push_str(s);
+    }
+
+    /// Add a formatted chunk.
+    fn push_fmt(&mut self, args: std::fmt::Arguments<'_>) {
+        self.last = Some(self.buf.len());
+        let _ = self.buf.write_fmt(args);
+    }
+
+    /// Start a chunk and return the buffer to write it into.
+    fn chunk(&mut self) -> &mut String {
+        self.last = Some(self.buf.len());
+        &mut self.buf
+    }
+
+    fn is_empty(&self) -> bool {
+        self.last.is_none()
+    }
+
+    /// `_rstrip_text`: strip the last chunk, return what was removed.
+    fn rstrip(&mut self) -> String {
+        let Some(start) = self.last else {
+            return String::new();
+        };
+        let (len, strip) = text::rstrip_newline(&self.buf[start..]);
+        let strip = strip.to_owned();
+        self.buf.truncate(start + len);
+        strip
+    }
+
+    /// Remove every chunk and return their concatenation, if not empty.
+    fn take(&mut self) -> Option<Box<str>> {
+        self.last = None;
+        if self.buf.is_empty() {
+            return None;
+        }
+        let text = Box::from(self.buf.as_str());
+        self.buf.clear();
+        Some(text)
+    }
+}
+
 /// Template compiler. A compiler compiles one template:
 /// see [`Compiler::compile`].
 pub struct Compiler<'a, H: Host> {
     host: &'a H,
     ctx: &'a H::Context,
-    opts: CompileOptions,
+    opts: Arc<CompileOptions>,
     hooks: CompileHooks,
     /// Directive evaluation order.
     order: Box<[Directive]>,
@@ -221,7 +278,9 @@ pub struct Compiler<'a, H: Host> {
     /// The template, mutated while compiling like the Python lxml tree.
     doc: Document,
     /// Pending static text chunks (`_text_concat`).
-    text: Vec<String>,
+    text: TextBuf,
+    /// Reused buffers for the child lists of the elements being compiled.
+    child_lists: Vec<Vec<NodeId>>,
     /// Compiled function bodies (lazy `t-set`/`t-call` bodies, then main).
     blocks: Vec<Code<H>>,
     name: Arc<str>,
@@ -281,7 +340,7 @@ impl<H: Host> CompileApi<H> for DirApi<'_, '_, H> {
         &mut self.c.doc
     }
     fn append_text(&mut self, text: &str) {
-        self.c.append_str(text);
+        self.c.append(text);
     }
     fn compile_node(&mut self, id: NodeId) -> Result<()> {
         let code = self.c.compile_node(id, self.cx)?;
@@ -402,7 +461,7 @@ impl<'a, H: Host> Compiler<'a, H> {
                 })
                 .collect(),
         };
-        let nsmap = Arc::new(opts.nsmap.clone());
+        let nsmap = opts.nsmap.clone();
         let reference: Arc<str> = match &viewid {
             Some(v) => {
                 let mut s = String::new();
@@ -421,7 +480,8 @@ impl<'a, H: Host> Compiler<'a, H> {
             order,
             custom,
             doc,
-            text: Vec::new(),
+            text: TextBuf::default(),
+            child_lists: Vec::new(),
             blocks: Vec::new(),
             name: name.clone(),
             reference: reference.clone(),
@@ -437,7 +497,7 @@ impl<'a, H: Host> Compiler<'a, H> {
             nsmap,
         };
         // `self._append_text("", compile_context)` before compiling the root.
-        c.append(String::new());
+        c.append("");
         let mut main = c.compile_root(root, &mut cx)?;
         main.extend(c.flush(true));
         c.blocks.push(main);
@@ -461,23 +521,13 @@ impl<'a, H: Host> Compiler<'a, H> {
 
     // ----- text buffer ------------------------------------------------------
 
-    fn append(&mut self, s: String) {
+    fn append(&mut self, s: &str) {
         self.text.push(s);
-    }
-
-    fn append_str(&mut self, s: &str) {
-        self.text.push(s.to_owned());
     }
 
     /// `_rstrip_text`.
     fn rstrip(&mut self) -> String {
-        let Some(last) = self.text.last_mut() else {
-            return String::new();
-        };
-        let (len, strip) = text::rstrip_newline(last);
-        let strip = strip.to_owned();
-        last.truncate(len);
-        strip
+        self.text.rstrip()
     }
 
     /// `_flush_text`.
@@ -486,14 +536,12 @@ impl<'a, H: Host> Compiler<'a, H> {
             return Vec::new();
         }
         if rstrip {
-            self.rstrip();
+            self.text.rstrip();
         }
-        let text: String = self.text.concat();
-        self.text.clear();
-        if text.is_empty() {
-            return Vec::new();
+        match self.text.take() {
+            Some(text) => vec![Stmt::Text(text)],
+            None => Vec::new(),
         }
-        vec![Stmt::Text(text.into_boxed_str())]
     }
 
     // ----- helpers -----------------------------------------------------------
@@ -573,15 +621,15 @@ impl<'a, H: Host> Compiler<'a, H> {
         self.doc.node(id).tag.eq_ignore_ascii_case("t")
     }
 
-    fn el_tag(&self, id: NodeId) -> (String, String) {
-        // (unqualified tag, tag with prefix)
+    fn el_tag(&self, id: NodeId) -> (XStr, XStr) {
+        // (unqualified tag, tag with prefix); short tags are stored inline
         let n = self.doc.node(id);
         if n.nsmap.is_empty() {
-            (n.tag.to_string(), n.tag.to_string())
+            (n.tag.clone(), n.tag.clone())
         } else {
-            let local = n.local_name().to_owned();
+            let local = XStr::from(n.local_name());
             let tag = match &n.prefix {
-                Some(p) => format!("{p}:{local}"),
+                Some(p) => format!("{p}:{local}").into(),
                 None => local.clone(),
             };
             (local, tag)
@@ -909,18 +957,17 @@ impl<'a, H: Host> Compiler<'a, H> {
             attrib
         };
         if unqualified != "t" {
-            let mut s = String::with_capacity(el_tag.len() + 1 + attrib.len() * 16);
+            let s = self.text.chunk();
             s.push('<');
             s.push_str(&el_tag);
             for (name, value) in &attrib {
                 s.push(' ');
                 s.push_str(name);
                 s.push_str("=\"");
-                crate::escape::escape_into(&mut s, value);
+                crate::escape::escape_into(s, value);
                 s.push('"');
             }
-            self.append(s);
-            self.append_str(if is_void(&el_tag) { "/>" } else { ">" });
+            self.append(if is_void(&el_tag) { "/>" } else { ">" });
         }
         let body = if has_ns {
             let original = cx.nsmap.clone();
@@ -943,7 +990,7 @@ impl<'a, H: Host> Compiler<'a, H> {
             self.directive_inner_content(id, cx)?
         };
         if unqualified != "t" && !is_void(&el_tag) {
-            self.append(format!("</{el_tag}>"));
+            self.text.push_fmt(format_args!("</{el_tag}>"));
         }
         Ok(body)
     }
@@ -1168,7 +1215,7 @@ impl<'a, H: Host> Compiler<'a, H> {
         if el_tag.is_empty() {
             return Ok(Vec::new());
         }
-        self.append(format!("<{el_tag}"));
+        self.text.push_fmt(format_args!("<{el_tag}"));
         let code = if cx.attrs_created {
             let mut code = self.flush(false);
             code.push(Stmt::AttrsFlush {
@@ -1179,7 +1226,7 @@ impl<'a, H: Host> Compiler<'a, H> {
             Vec::new()
         };
         let closes = self.doc.node(id).has("t-tag-close");
-        self.append_str(if closes { ">" } else { "/>" });
+        self.append(if closes { ">" } else { "/>" });
         Ok(code)
     }
 
@@ -1187,7 +1234,7 @@ impl<'a, H: Host> Compiler<'a, H> {
         if let Some(el_tag) = self.doc.node_mut(id).pop("t-tag-close")
             && !el_tag.is_empty()
         {
-            self.append(format!("</{el_tag}>"));
+            self.text.push_fmt(format_args!("</{el_tag}>"));
         }
 
         Ok(Vec::new())
@@ -1295,34 +1342,42 @@ impl<'a, H: Host> Compiler<'a, H> {
         } else {
             cx
         };
-        if let Some(t) = self.doc.node(id).text.clone() {
-            self.append_str(&t);
+        if let Some(t) = &self.doc.node(id).text {
+            self.text.push(t);
         }
         let mut body = Vec::new();
-        let children = self.doc.node(id).children.clone();
-        for item in children {
-            match self.doc.node(item).kind {
-                NodeKind::Comment => {
-                    if self.opts.preserve_comments {
-                        let t = self.doc.node(item).text.clone().unwrap_or_default();
-                        self.append(format!("<!--{t}-->"));
+        // `for item in list(el)`: a snapshot, in a reused buffer.
+        let mut children = self.child_lists.pop().unwrap_or_default();
+        children.extend_from_slice(&self.doc.node(id).children);
+        let res = (|| -> Result<()> {
+            for &item in &children {
+                let n = self.doc.node(item);
+                match n.kind {
+                    NodeKind::Comment => {
+                        if self.opts.preserve_comments {
+                            let t = n.text.as_deref().unwrap_or("");
+                            self.text.push_fmt(format_args!("<!--{t}-->"));
+                        }
+                    }
+                    NodeKind::Pi => {
+                        if self.opts.preserve_comments {
+                            let t = n.text.as_deref().unwrap_or("");
+                            self.text.push_fmt(format_args!("<?{} {t}?>", n.tag));
+                        }
+                    }
+                    NodeKind::Element => {
+                        body.extend(self.compile_node(item, cx)?);
                     }
                 }
-                NodeKind::Pi => {
-                    if self.opts.preserve_comments {
-                        let n = self.doc.node(item);
-                        let s = format!("<?{} {}?>", n.tag, n.text.as_deref().unwrap_or(""));
-                        self.append(s);
-                    }
-                }
-                NodeKind::Element => {
-                    body.extend(self.compile_node(item, cx)?);
+                if let Some(tail) = &self.doc.node(item).tail {
+                    self.text.push(tail);
                 }
             }
-            if let Some(tail) = self.doc.node(item).tail.clone() {
-                self.append_str(&tail);
-            }
-        }
+            Ok(())
+        })();
+        children.clear();
+        self.child_lists.push(children);
+        res?;
         Ok(body)
     }
 
@@ -1349,7 +1404,7 @@ impl<'a, H: Host> Compiler<'a, H> {
         let loc = self.loc(id);
         let cond = self.compile_expr(&expr, false)?;
         if !strip.is_empty() {
-            self.append(strip.clone());
+            self.append(&strip);
         }
         let mut then = self.compile_directives(id, cx, iter)?;
         then.extend(self.flush(true));
@@ -1385,7 +1440,7 @@ impl<'a, H: Host> Compiler<'a, H> {
                 }
                 self.doc.node_mut(id).tail = None;
                 if !strip.is_empty() {
-                    self.append(strip);
+                    self.append(&strip);
                 }
                 orelse = self.compile_node(nid, cx)?;
                 orelse.extend(self.flush(true));
@@ -1431,7 +1486,7 @@ impl<'a, H: Host> Compiler<'a, H> {
         let strip = self.rstrip();
         let mut code = self.flush(false);
         if !strip.is_empty() && !self.is_t(id) {
-            self.append(strip);
+            self.append(&strip);
         }
         let mut body = self.compile_directives(id, cx, iter)?;
         body.extend(self.flush(true));
@@ -1661,7 +1716,7 @@ impl<'a, H: Host> Compiler<'a, H> {
             };
             self.check(id, &mut sub, Directive::InnerContent)?;
             let mut content = self.directive_inner_content(id, &mut sub)?;
-            self.append(String::new());
+            self.append("");
             content.extend(self.flush(true));
             self.blocks.push(content);
             Some(self.blocks.len() - 1)

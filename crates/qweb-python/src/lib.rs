@@ -111,7 +111,7 @@ pub(crate) struct PyCtx {
     bridge: Py<PyAny>,
     flags: u32,
     nsmap: Option<NsMap>,
-    compile: CompileOptions,
+    compile: Arc<CompileOptions>,
     cache_keys: Arc<Vec<String>>,
 }
 
@@ -139,13 +139,13 @@ impl PyCtx {
             };
             extra.push(repr);
         }
-        let compile = CompileOptions {
+        let compile = Arc::new(CompileOptions {
             preserve_comments: truthy_opt(d, "preserve_comments")?,
             edit_translations: truthy_opt(d, "edit_translations")?,
             dev_mode: truthy_opt(d, "dev_mode")?,
-            nsmap: nsmap.as_ref().map(|n| (**n).clone()).unwrap_or_default(),
+            nsmap: nsmap.clone().unwrap_or_else(qweb_core::xml::empty_nsmap),
             extra,
-        };
+        });
         let flags = match bridge.bind(py).getattr(pyo3::intern!(py, "flags")) {
             Ok(f) => f.extract::<u32>().unwrap_or(0),
             Err(_) => 0,
@@ -695,7 +695,7 @@ impl Host for PyHost {
     }
 
     // ----- context / loading ---------------------------------------------------
-    fn compile_options(&self, ctx: &Arc<PyCtx>) -> CompileOptions {
+    fn compile_options(&self, ctx: &Arc<PyCtx>) -> Arc<CompileOptions> {
         ctx.compile.clone()
     }
     fn call_context(
@@ -1070,11 +1070,12 @@ fn loaded_from_py(r: &Bound<'_, PyAny>) -> PyResult<Loaded<PyHost>> {
         return Ok(Loaded::source(&*s.to_cow()?));
     }
     if let Ok(t) = r.cast::<PyTuple>() {
-        let source: String = t.get_item(0)?.str()?.to_cow()?.into_owned();
+        // One copy, straight from the Python string (UTF-8 is cached by CPython).
+        let source: Arc<str> = Arc::from(&*t.get_item(0)?.str()?.to_cow()?);
         let viewid = t.get_item(1)?;
         let xmlid = t.get_item(2)?;
         return Ok(Loaded::Source {
-            source: Arc::from(source),
+            source,
             viewid: if viewid.is_none() {
                 None
             } else {

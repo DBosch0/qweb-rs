@@ -204,6 +204,38 @@ pub fn float_repr(f: f64) -> String {
     out
 }
 
+/// A string formatted in a fixed-size stack buffer (no allocation).
+struct StackStr<const N: usize> {
+    buf: [u8; N],
+    len: usize,
+}
+
+impl<const N: usize> StackStr<N> {
+    fn new() -> Self {
+        StackStr {
+            buf: [0; N],
+            len: 0,
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        // Only whole `&str`s are copied in.
+        std::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+    }
+}
+
+impl<const N: usize> fmt::Write for StackStr<N> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let end = self.len + s.len();
+        if end > N {
+            return Err(fmt::Error);
+        }
+        self.buf[self.len..end].copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
 /// Python `repr(float)` appended to `out`.
 fn write_float(f: f64, out: &mut String) {
     if f.is_nan() {
@@ -216,10 +248,16 @@ fn write_float(f: f64, out: &mut String) {
         return out.push_str(if f.is_sign_negative() { "-0.0" } else { "0.0" });
     }
     // Shortest round-trip digits and exponent, then Python's layout rules.
-    let e = format!("{:e}", f.abs());
-    let (mant, exp) = e.split_once('e').unwrap();
+    // Both are formatted on the stack (at most 17 digits plus the exponent).
+    let mut e = StackStr::<32>::new();
+    let _ = write!(e, "{:e}", f.abs());
+    let (mant, exp) = e.as_str().split_once('e').unwrap();
     let exp: i32 = exp.parse().unwrap();
-    let digits: String = mant.chars().filter(|c| *c != '.').collect();
+    let mut digits = StackStr::<32>::new();
+    for part in mant.split('.') {
+        let _ = digits.write_str(part);
+    }
+    let digits = digits.as_str();
     let decpt = exp + 1;
     if f < 0.0 {
         out.push('-');
@@ -236,11 +274,11 @@ fn write_float(f: f64, out: &mut String) {
         for _ in 0..(-decpt) {
             out.push('0');
         }
-        out.push_str(&digits);
+        out.push_str(digits);
     } else {
         let d = decpt as usize;
         if digits.len() <= d {
-            out.push_str(&digits);
+            out.push_str(digits);
             for _ in digits.len()..d {
                 out.push('0');
             }
