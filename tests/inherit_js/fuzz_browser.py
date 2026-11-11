@@ -194,9 +194,9 @@ def main():
     seed = int(sys.argv[2]) if len(sys.argv) > 2 else 0
     if not ODOO:
         sys.exit('set ODOO_PATH to the Odoo source tree')
-    original = open(os.path.join(ODOO, 'addons/web/static/src/core/template_inheritance.js')).read()
+    original = open(os.path.join(ODOO, 'addons/web/static/src/core/template_inheritance.js'), encoding='utf-8').read()
     original = re.sub(r'^export ', '', original, flags=re.M)
-    glue = open(os.path.join(PKG, 'qweb_wasm.js')).read()
+    glue = open(os.path.join(PKG, 'qweb_wasm.js'), encoding='utf-8').read()
     wasm = base64.b64encode(open(os.path.join(PKG, 'qweb_wasm_bg.wasm'), 'rb').read()).decode()
     page = (
         '<!doctype html><html><body><pre id="out">not run</pre>'
@@ -204,7 +204,7 @@ def main():
         f'<script>const WASM = "{wasm}"; const ITERATIONS = {iterations}; const SEED = {seed};</script>'
         f'<script>{FUZZER}\n{original}\nmain();</script></body></html>'
     )
-    with tempfile.NamedTemporaryFile('w', suffix='.html', delete=False) as f:
+    with tempfile.NamedTemporaryFile('w', encoding='utf-8', suffix='.html', delete=False) as f:
         f.write(page)
     try:
         dom = subprocess.run(

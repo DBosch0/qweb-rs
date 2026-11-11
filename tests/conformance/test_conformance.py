@@ -13,7 +13,7 @@ from reference import make_loader, run_case, to_python  # noqa: E402
 
 import qweb_rs  # noqa: E402
 
-with open(os.path.join(os.path.dirname(__file__), 'cases.json')) as f:
+with open(os.path.join(os.path.dirname(__file__), 'cases.json'), encoding='utf-8') as f:
     CASES = json.load(f)
 
 

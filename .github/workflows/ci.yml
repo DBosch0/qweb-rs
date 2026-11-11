@@ -130,10 +130,13 @@ jobs:
         shell: bash
         run: |
           wheel=$(ls crates/qweb-python/dist/*.whl)
+          # An open() without encoding= decodes cases.json as cp1252 on Windows:
+          # make it an error on every OS.
+          export PYTHONWARNDEFAULTENCODING=1
           for py in 3.12 3.14; do
             uv run --no-project --isolated --python "$py" \
               --with "$wheel" --with pytest --with lxml --with markupsafe \
-              python -m pytest tests/conformance -q
+              python -W error::EncodingWarning -m pytest tests/conformance -q
           done
       - uses: actions/upload-artifact@v4
         with:

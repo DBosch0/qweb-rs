@@ -21,6 +21,6 @@ for case in CASES:
     res = run_case(case, render_reference)
     out.append({**case, **res})
 path = os.path.join(os.path.dirname(__file__), 'cases.json')
-with open(path, 'w') as f:
+with open(path, 'w', encoding='utf-8') as f:
     json.dump(out, f, indent=1, ensure_ascii=False)
 print(f'{len(out)} cases written to {path}; errors: {sum("error" in c for c in out)}')

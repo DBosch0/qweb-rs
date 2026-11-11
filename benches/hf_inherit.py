@@ -23,7 +23,7 @@ from odoo.tools.template_inheritance import apply_inheritance_specs  # noqa: E40
 import qweb_rs  # noqa: E402
 
 engine, path = sys.argv[1], sys.argv[2]
-with open(path) as f:
+with open(path, encoding='utf-8') as f:
     cases = json.load(f)
 
 

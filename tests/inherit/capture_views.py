@@ -74,7 +74,7 @@ for case in cases:
 print(f'inheritance cases: {len(cases)}  ok: {ok}  mismatches: {fail}  rust time: {t_rs:.3f}s')
 out = os.environ.get('QWEB_INHERIT_CASES')
 if out:
-    with open(out, 'w') as f:
+    with open(out, 'w', encoding='utf-8') as f:
         json.dump(cases, f)
-with open(os.environ.get('QWEB_INHERIT_FAILURES', '/dev/null'), 'w') as f:
+with open(os.environ.get('QWEB_INHERIT_FAILURES', os.devnull), 'w', encoding='utf-8') as f:
     json.dump(failures, f, indent=1)
