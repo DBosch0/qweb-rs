@@ -13,7 +13,7 @@ qweb-core.workspace = true
 qweb-value.workspace = true
 qweb-inherit.workspace = true
 serde_json = { version = "1", features = ["preserve_order"] }
-wasm-bindgen = "=0.2.128"
+wasm-bindgen = "=0.2.130"
 
 # wasm-pack: optimize for size with wasm-opt (binaryen). Recent Rust emits
 # bulk-memory, sign-ext, ... for wasm32, which wasm-opt rejects unless enabled.
