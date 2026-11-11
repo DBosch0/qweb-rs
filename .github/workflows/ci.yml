@@ -31,6 +31,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The Python package ships copies (PEP 639 forbids paths outside the package).
+      - name: License copies in crates/qweb-python match the root
+        run: cmp LICENSE crates/qweb-python/LICENSE && cmp COPYRIGHT crates/qweb-python/COPYRIGHT
 
   # API docs build without warnings (broken or private intra-doc links, ...).
   docs:
@@ -146,6 +149,9 @@ jobs:
           manylinux: ${{ matrix.manylinux }}
           sccache: true
       - uses: astral-sh/setup-uv@v7
+      - name: Check the package metadata (what PyPI will render)
+        shell: bash
+        run: uvx twine check --strict crates/qweb-python/dist/*.whl
       - name: Test the wheel (oldest and newest supported Python)
         shell: bash
         run: |

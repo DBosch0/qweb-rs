@@ -5,10 +5,29 @@ build-backend = "maturin"
 [project]
 name = "qweb-rs"
 description = "Fast QWeb templating engine (Rust), drop-in for Odoo's ir.qweb rendering"
+readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "LGPL-3.0-only" }
+license = "LGPL-3.0-only"
+license-files = ["LICENSE", "COPYRIGHT"]
+authors = [{ name = "David Bosch" }]
+keywords = ["odoo", "qweb", "templates", "xpath", "rust"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Rust",
+    "Topic :: Text Processing :: Markup :: HTML",
+    "Topic :: Text Processing :: Markup :: XML",
+]
 dependencies = ["markupsafe", "lxml"]
 dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/DBosch0/qweb-rs"
+Issues = "https://github.com/DBosch0/qweb-rs/issues"
 
 [tool.maturin]
 python-source = "python"
