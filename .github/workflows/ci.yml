@@ -185,7 +185,7 @@ jobs:
           name: lcov
           path: lcov.info
       # Needs the CODECOV_TOKEN repository secret (see codecov.io); harmless without it.
-      - uses: codecov/codecov-action@v5
+      - uses: codecov/codecov-action@v7
         with:
           files: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
