@@ -27,7 +27,6 @@ jobs:
     name: Release-plz release
     if: github.repository_owner == 'DBosch0'
     runs-on: ubuntu-latest
-    environment: release
     permissions:
       contents: write
       pull-requests: read
@@ -68,7 +67,6 @@ jobs:
     needs: release
     if: github.repository_owner == 'DBosch0'
     runs-on: ubuntu-latest
-    environment: release
     permissions:
       contents: write
       pull-requests: write
