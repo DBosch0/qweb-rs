@@ -1,0 +1,20 @@
+qweb-rs
+
+    Copyright (c) 2026 David Bosch
+
+qweb-rs is a port of parts of Odoo (https://github.com/odoo/odoo): the QWeb
+template engine (odoo/addons/base/models/ir_qweb.py), template inheritance
+(odoo/tools/template_inheritance.py and
+addons/web/static/src/core/template_inheritance.js), and test cases adapted
+from odoo/addons/base/tests/test_ir_qweb.py. Those parts are derived from
+code that is
+
+    Copyright (c) Odoo S.A.
+
+and licensed under the GNU Lesser General Public License, version 3.
+
+qweb-rs as a whole is distributed under the same license, LGPL-3.0-only
+(see the LICENSE file).
+
+Odoo is a trademark of Odoo S.A. qweb-rs is not affiliated with or endorsed
+by Odoo S.A.

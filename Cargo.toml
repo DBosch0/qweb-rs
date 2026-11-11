@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/qweb-core", "crates/qweb-value", "crates/qweb-inherit", "crates/qweb-python", "crates/qweb-wasm"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "LGPL-3.0-only"
 rust-version = "1.88.0"
@@ -13,9 +13,9 @@ keywords = ["qweb", "template", "xpath", "odoo"]
 categories = ["template-engine", "web-programming"]
 
 [workspace.dependencies]
-qweb-core = { path = "crates/qweb-core", version = "0.1.0" }
-qweb-value = { path = "crates/qweb-value", version = "0.1.0" }
-qweb-inherit = { path = "crates/qweb-inherit", version = "0.1.0" }
+qweb-core = { path = "crates/qweb-core", version = "0.1.1" }
+qweb-value = { path = "crates/qweb-value", version = "0.1.1" }
+qweb-inherit = { path = "crates/qweb-inherit", version = "0.1.1" }
 memchr = "2.8"
 
 [profile.release]

@@ -17,7 +17,8 @@ and fuzzers compare the two engines.
 - **Portable:** the core is pure Rust with no SIMD or platform-specific
   code, and it builds for `wasm32`.
 
-> **Status:** experimental and not yet published on PyPI, crates.io or npm.
+> **Status:** experimental. The crates are on crates.io; the PyPI (`qweb-rs`)
+> and npm (`qweb-wasm`) packages are being released.
 > The full `ir.qweb` integration needs a patched Odoo (see
 > [Using it in Odoo](#using-it-in-odoo)).
 
@@ -132,7 +133,7 @@ applyInheritanceServer('<t t-name="x"><p>hi</p></t>',
 ```
 
 `scripts/build_wasm.sh` builds the same bindings with the system `wasm-bindgen`
-(it must match the crate's pinned version, `0.2.128`).
+(it must match the crate's pinned version, `0.2.130`).
 
 In the browser, Odoo's Owl compiles templates to a virtual DOM and never
 renders strings, so on that side WASM shares only the parsing and the

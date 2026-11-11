@@ -1,0 +1,88 @@
+# Build the `qweb-wasm` npm package (scripts/build_npm.sh) and publish it.
+#
+#   push tag vX.Y.Z  -> npm, after approval (environment `npm`)
+#   manual run       -> build, test and `npm publish --dry-run` only
+#
+# Publishing uses npm trusted publishing (OIDC, with provenance): no token is
+# stored. npm only lets you add a trusted publisher to a package that already
+# exists, so publish the first version by hand (see README_PRIV.md), then in
+# the package settings on npmjs.com add: GitHub Actions, owner DBosch0,
+# repository qweb-rs, workflow release-npm.yml, environment npm.
+name: Release npm
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: version
+        name: Version (the tag must match Cargo.toml)
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${version}"
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - id: wb
+        run: echo "version=$(cargo pkgid -p wasm-bindgen | sed 's/.*@//')" >> "$GITHUB_OUTPUT"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ steps.wb.outputs.version }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Build and pack
+        run: |
+          scripts/build_npm.sh
+          (cd target/npm/qweb-wasm && npm pack --pack-destination ../)
+      - name: Test the packed package
+        run: node tests/wasm/npm_package.mjs target/npm/qweb-wasm-*.tgz
+      - name: npm publish --dry-run
+        run: npm publish --dry-run target/npm/qweb-wasm-*.tgz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: npm-package
+          path: target/npm/qweb-wasm-*.tgz
+
+  publish:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    # Give this environment a required reviewer: the upload waits for approval.
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/qweb-wasm
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-package
+      # The first version is published by hand, so it can already be there.
+      - name: Publish
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          if npm view "qweb-wasm@${VERSION}" version >/dev/null 2>&1; then
+            echo "qweb-wasm@${VERSION} is already on npm: nothing to do."
+          else
+            npm publish --access public "./qweb-wasm-${VERSION}.tgz"
+          fi

@@ -1,0 +1,36 @@
+{
+  "name": "qweb-wasm",
+  "version": "0.0.0-set-by-build-npm",
+  "description": "Odoo's QWeb template inheritance and string rendering, compiled from Rust to WebAssembly",
+  "license": "LGPL-3.0-only",
+  "author": "David Bosch",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DBosch0/qweb-rs.git",
+    "directory": "crates/qweb-wasm"
+  },
+  "homepage": "https://github.com/DBosch0/qweb-rs#readme",
+  "bugs": "https://github.com/DBosch0/qweb-rs/issues",
+  "keywords": ["odoo", "qweb", "templates", "xpath", "wasm", "webassembly"],
+  "type": "module",
+  "exports": {
+    ".": {
+      "node": {
+        "types": "./node/qweb_wasm.d.ts",
+        "default": "./node/qweb_wasm.js"
+      },
+      "default": {
+        "types": "./web/qweb_wasm.d.ts",
+        "default": "./web/qweb_wasm.js"
+      }
+    },
+    "./qweb_wasm_bg.wasm": "./web/qweb_wasm_bg.wasm",
+    "./package.json": "./package.json"
+  },
+  "main": "./node/qweb_wasm.js",
+  "types": "./web/qweb_wasm.d.ts",
+  "files": ["web/", "node/", "COPYRIGHT"],
+  "engines": {
+    "node": ">=18"
+  }
+}
