@@ -17,8 +17,8 @@ pub const INLINE: usize = 23;
 /// Immutable string, stored inline when short. Derefs to `str`.
 ///
 /// Layout (24 bytes, no padding): 16 bytes that hold either the first inline
-/// bytes or the heap pointer and length, 7 more inline bytes, then a [`Tag`]
-/// byte that is the inline length or [`Tag::Heap`]. The tag is a `u8` enum
+/// bytes or the heap pointer and length, 7 more inline bytes, then a `Tag`
+/// byte that is the inline length or `Tag::Heap`. The tag is a `u8` enum
 /// with 25 values, so the other 231 values are a niche: `Option<XStr>` is
 /// also 24 bytes.
 #[repr(C)]
