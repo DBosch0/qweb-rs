@@ -1,0 +1,13 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    ignore:
+      # Pinned with `=`: the wasm-bindgen CLI and the Odoo addon files must be updated with it.
+      - dependency-name: wasm-bindgen
