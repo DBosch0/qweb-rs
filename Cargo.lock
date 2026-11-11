@@ -166,7 +166,7 @@ dependencies = [
 
 [[package]]
 name = "qweb-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "derive-where",
  "memchr",
@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "qweb-inherit"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "qweb-core",
  "regex-lite",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "qweb-python"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "pyo3",
  "qweb-core",
@@ -191,7 +191,7 @@ dependencies = [
 
 [[package]]
 name = "qweb-value"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "indexmap",
  "qweb-core",
@@ -200,7 +200,7 @@ dependencies = [
 
 [[package]]
 name = "qweb-wasm"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "qweb-core",
  "qweb-inherit",
