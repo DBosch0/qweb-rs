@@ -1,5 +1,8 @@
 [![CI](https://github.com/DBosch0/qweb-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/DBosch0/qweb-rs/actions/workflows/ci.yml)
-[![Dependabot Updates](https://github.com/DBosch0/qweb-rs/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/DBosch0/qweb-rs/actions/workflows/dependabot/dependabot-updates)
+[![Dependabot](https://github.com/DBosch0/qweb-rs/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/DBosch0/qweb-rs/actions/workflows/dependabot/dependabot-updates)
+[![crates.io](https://github.com/DBosch0/qweb-rs/actions/workflows/release-plz.yml/badge.svg)](https://github.com/DBosch0/qweb-rs/actions/workflows/release-plz.yml)
+[![PyPI](https://github.com/DBosch0/qweb-rs/actions/workflows/release-python.yml/badge.svg)](https://github.com/DBosch0/qweb-rs/actions/workflows/release-python.yml)
+[![npm](https://github.com/DBosch0/qweb-rs/actions/workflows/release-npm.yml/badge.svg)](https://github.com/DBosch0/qweb-rs/actions/workflows/release-npm.yml)
 # qweb-rs
 
 A Rust port of [Odoo](https://github.com/odoo/odoo)'s QWeb template engine and
