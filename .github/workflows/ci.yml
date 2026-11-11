@@ -95,7 +95,7 @@ jobs:
         run: |
           f=target/wasm-pkg/no-modules/qweb_wasm_bg.wasm
           echo "qweb_wasm_bg.wasm: $(wc -c < $f) bytes, $(gzip -9c $f | wc -c) gzipped" >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wasm-pkg
           path: target/wasm-pkg
@@ -138,7 +138,7 @@ jobs:
               --with "$wheel" --with pytest --with lxml --with markupsafe \
               python -W error::EncodingWarning -m pytest tests/conformance -q
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheel-${{ matrix.os }}
           path: crates/qweb-python/dist/*.whl
@@ -180,7 +180,7 @@ jobs:
           .venv/bin/python -m pytest tests/conformance -q
           cargo llvm-cov report --lcov --output-path lcov.info
           { echo '```'; cargo llvm-cov report --summary-only; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: lcov
           path: lcov.info
