@@ -3,12 +3,13 @@
 #
 #   tests/odoo/run_tests.sh <db> <test-tags> [log-name]
 #
-# Env: ODOO (odoo source, default ~/Documents/odoo_src/odoo), PGDIR (cluster
+# Env: ODOO (odoo source, default $ODOO_PATH; required), PGDIR (cluster
 # dir, default ~/.cache/qweb-rs-pg), CONF (odoo config, default $PGDIR/odoo.conf),
 # ODOO_QWEB_ENGINE=python for the reference.
 set -u
 DB=$1; TAGS=$2; NAME=${3:-$DB}
-ODOO=${ODOO:-$HOME/Documents/odoo_src/odoo}
+ODOO=${ODOO:-${ODOO_PATH:-}}
+[ -n "$ODOO" ] || { echo "set ODOO (or ODOO_PATH) to the Odoo source tree" >&2; exit 1; }
 PGDIR=${PGDIR:-$HOME/.cache/qweb-rs-pg}
 PY=${PY:-$(cd "$(dirname "$0")/../.." && pwd)/.venv/bin/python}
 LOG=$PGDIR/$NAME.log

@@ -13,7 +13,9 @@ if os.environ.get('PYTHONHASHSEED') != '0':
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 sys.path.insert(0, os.path.dirname(__file__))
-from reference import make_loader, render_reference, run_case, to_python  # noqa: E402
+from reference import make_loader, render_reference, require_odoo, run_case, to_python  # noqa: E402
+
+require_odoo()
 
 import qweb_rs  # noqa: E402
 

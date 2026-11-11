@@ -17,7 +17,7 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-ODOO = os.environ.get('ODOO_PATH', '/home/david/Documents/odoo_src/odoo')
+ODOO = os.environ.get('ODOO_PATH')  # the Odoo source tree (required)
 CHROME = os.environ.get('CHROME', 'google-chrome-stable')
 PKG = os.path.join(ROOT, 'target', 'wasm-pkg', 'no-modules')
 
@@ -192,6 +192,8 @@ function main() {
 def main():
     iterations = int(sys.argv[1]) if len(sys.argv) > 1 else 2000
     seed = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+    if not ODOO:
+        sys.exit('set ODOO_PATH to the Odoo source tree')
     original = open(os.path.join(ODOO, 'addons/web/static/src/core/template_inheritance.js')).read()
     original = re.sub(r'^export ', '', original, flags=re.M)
     glue = open(os.path.join(PKG, 'qweb_wasm.js')).read()

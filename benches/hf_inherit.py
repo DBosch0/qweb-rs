@@ -14,7 +14,9 @@ import json
 import os
 import sys
 
-sys.path.insert(0, os.environ.get("ODOO_PATH", "/home/david/Documents/odoo_src/odoo"))
+# The Odoo source tree. Without ODOO_PATH, `odoo` must be importable.
+if os.environ.get("ODOO_PATH"):
+    sys.path.insert(0, os.environ["ODOO_PATH"])
 from lxml import etree  # noqa: E402
 from odoo.tools.template_inheritance import apply_inheritance_specs  # noqa: E402
 

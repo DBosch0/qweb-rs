@@ -8,8 +8,10 @@ import types
 # integration render with Rust when qweb_rs is importable.
 os.environ['ODOO_QWEB_ENGINE'] = 'python'
 
-ODOO_PATH = os.environ.get('ODOO_PATH', '/home/david/Documents/odoo_src/odoo')
-if ODOO_PATH not in sys.path:
+# The Odoo source tree (only needed for the reference renders, not for the
+# tests against cases.json). Without ODOO_PATH, `odoo` must be importable.
+ODOO_PATH = os.environ.get('ODOO_PATH')
+if ODOO_PATH and ODOO_PATH not in sys.path:
     sys.path.insert(0, ODOO_PATH)
 
 from lxml import etree  # noqa: E402
@@ -40,6 +42,14 @@ def make_loader(templates):
     def load(name):
         return etree.fromstring(templates[str(name)]), name
     return load
+
+
+def require_odoo():
+    """Exit unless Odoo is importable (run_case would record the ImportError as a result)."""
+    try:
+        import odoo.addons.base.models.ir_qweb  # noqa: F401
+    except ImportError as e:
+        sys.exit(f"cannot import Odoo ({e}): set ODOO_PATH to the Odoo source tree")
 
 
 def render_reference(case):

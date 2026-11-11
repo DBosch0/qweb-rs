@@ -131,7 +131,7 @@ ODOO_QWEB_ENGINE=python ODOO=$ODOO_PATH CONF=<odoo.conf> \
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ODOO` | `~/Documents/odoo_src/odoo` | Odoo source tree. |
+| `ODOO` | `$ODOO_PATH` | Odoo source tree (required). |
 | `PGDIR` | `~/.cache/qweb-rs-pg` | Where the log (`<log-name>.log`) is written. |
 | `CONF` | `$PGDIR/odoo.conf` | Odoo configuration file. |
 | `PY` | `.venv/bin/python` of this repository | Python interpreter. |

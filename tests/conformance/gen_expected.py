@@ -12,7 +12,9 @@ if os.environ.get('PYTHONHASHSEED') != '0':
 
 sys.path.insert(0, os.path.dirname(__file__))
 from cases import CASES  # noqa: E402
-from reference import render_reference, run_case  # noqa: E402
+from reference import render_reference, require_odoo, run_case  # noqa: E402
+
+require_odoo()
 
 out = []
 for case in CASES:

@@ -11,8 +11,10 @@ import os
 import random
 import sys
 
-ODOO_PATH = os.environ.get('ODOO_PATH', '/home/david/Documents/odoo_src/odoo')
-sys.path.insert(0, ODOO_PATH)
+# The Odoo source tree. Without ODOO_PATH, `odoo` must be importable.
+ODOO_PATH = os.environ.get('ODOO_PATH')
+if ODOO_PATH:
+    sys.path.insert(0, ODOO_PATH)
 
 from lxml import etree  # noqa: E402
 
