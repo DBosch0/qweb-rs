@@ -1,3 +1,5 @@
+[![CI](https://github.com/DBosch0/qweb-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/DBosch0/qweb-rs/actions/workflows/ci.yml)
+[![Dependabot Updates](https://github.com/DBosch0/qweb-rs/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/DBosch0/qweb-rs/actions/workflows/dependabot/dependabot-updates)
 # qweb-rs
 
 A Rust port of [Odoo](https://github.com/odoo/odoo)'s QWeb template engine and
