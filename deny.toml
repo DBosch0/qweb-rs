@@ -1,0 +1,45 @@
+# cargo-deny configuration: https://embarkstudios.github.io/cargo-deny/
+# Run: cargo deny check   (CI runs it in the `cargo-deny` job)
+
+[graph]
+# Every target is checked (host, wasm32-unknown-unknown, wasm32-wasip1).
+all-features = false
+
+[advisories]
+# RustSec advisories, unmaintained and yanked crates.
+# Add an ignore only with a reason, e.g. { id = "RUSTSEC-0000-0000", reason = "..." }.
+ignore = []
+
+[licenses]
+# qweb-rs is LGPL-3.0-only, so dependencies must be compatible with it:
+# permissive licenses, or LGPL-3.0 itself. Copyleft licenses like GPL are not
+# allowed, because they would force the whole library to be GPL. cargo-deny
+# warns about any entry that no crate uses, so this list is exactly the
+# licenses in Cargo.lock: add one only after checking it is compatible.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception", # target-lexicon (pyo3 build dependency)
+    "Zlib",                           # foldhash (hashbrown)
+    "Unicode-3.0",                    # unicode-ident
+    "LGPL-3.0-only",                  # the qweb-* crates themselves
+]
+confidence-threshold = 0.8
+
+[bans]
+# One version of each crate keeps the WASM build small; a duplicate is a warning
+# because a dependency update can bring one in for a while.
+multiple-versions = "warn"
+# No `*` version requirements. Path dependencies between workspace crates are
+# allowed: [workspace.dependencies] in Cargo.toml must also give a version
+# before `cargo publish`.
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+# Only crates.io: no other registries and no git dependencies.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
