@@ -8,6 +8,8 @@
 //! types ([`Host::Value`], [`Host::Key`], [`Host::Opaque`]), created once at
 //! compile time.
 
+use derive_where::derive_where;
+use std::fmt;
 use std::sync::{Arc, OnceLock};
 
 use crate::expr::{BinOp, CmpOp, UnOp};
@@ -17,6 +19,7 @@ use crate::xml::{Document, NodeId, NsMap};
 /// Lowered expression, ready for evaluation by a host.
 ///
 /// Literals are already host values, and tuples of constants are folded.
+#[derive_where(Debug; H::Value, H::Key, H::Opaque, H::Hook)]
 pub enum Ex<H: Host> {
     /// Constant value (literals, builtins, folded tuples).
     Const(H::Value),
@@ -74,6 +77,7 @@ pub enum Ex<H: Host> {
 }
 
 /// Format string (`t-attf-*`, `t-valuef`, ...).
+#[derive_where(Debug; H::Value, H::Key, H::Opaque, H::Hook)]
 pub enum Format<H: Host> {
     /// No interpolation: the literal string value.
     Const(H::Value),
@@ -82,6 +86,7 @@ pub enum Format<H: Host> {
 }
 
 /// A piece of a [`Format`].
+#[derive_where(Debug; H::Value, H::Key, H::Opaque, H::Hook)]
 pub enum FormatPart<H: Host> {
     /// Literal text.
     Lit(Box<str>),
@@ -90,6 +95,7 @@ pub enum FormatPart<H: Host> {
 }
 
 /// Value of an attribute set by [`Stmt::AttrSet`].
+#[derive_where(Debug; H::Value, H::Key, H::Opaque, H::Hook)]
 pub enum AttrSrc<H: Host> {
     /// Static attribute value (a str).
     Static(Arc<str>),
@@ -103,10 +109,10 @@ pub enum AttrSrc<H: Host> {
 ///
 /// Usually just a node id: the text is built by [`Program::location`] only
 /// when an error is reported, from the template source parsed again.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Loc(LocKind);
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 enum LocKind {
     /// Element of the template source, unchanged when it was recorded.
     Node(NodeId),
@@ -114,9 +120,10 @@ enum LocKind {
     Text(Arc<LocText>),
 }
 
-/// Location text: XPath and start tag of an element.
+/// Location text: `XPath` and start tag of an element.
+#[derive(Debug)]
 pub struct LocText {
-    /// XPath of the element.
+    /// `XPath` of the element.
     pub path: Arc<str>,
     /// Start tag of the element, with its attributes before compilation.
     pub element: Arc<str>,
@@ -141,6 +148,14 @@ impl Loc {
 pub(crate) struct LocSource {
     source: Option<Arc<str>>,
     doc: OnceLock<Option<Document>>,
+}
+
+impl fmt::Debug for LocSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LocSource")
+            .field("source", &self.source)
+            .finish_non_exhaustive()
+    }
 }
 
 impl LocSource {
@@ -176,6 +191,7 @@ impl LocSource {
 }
 
 /// What a [`Out`] statement outputs.
+#[derive_where(Debug; H::Value, H::Key, H::Opaque, H::Hook)]
 pub enum OutContent<H: Host> {
     /// `t-out` expression.
     Expr(Ex<H>),
@@ -191,6 +207,7 @@ pub enum OutContent<H: Host> {
 }
 
 /// What a [`Out`] statement does when its content is `None` or `False`.
+#[derive_where(Debug; H::Value, H::Key, H::Opaque, H::Hook)]
 pub enum Otherwise<H: Host> {
     /// `else:` tag with default content.
     Default(Vec<Stmt<H>>),
@@ -204,6 +221,7 @@ pub enum Otherwise<H: Host> {
 }
 
 /// `t-out` / `t-field`, with the element around it.
+#[derive_where(Debug; H::Value, H::Key, H::Opaque, H::Hook)]
 pub struct Out<H: Host> {
     /// The value to output.
     pub content: OutContent<H>,
@@ -220,6 +238,7 @@ pub struct Out<H: Host> {
 }
 
 /// Conversion of an [`Out`] value through [`Host::get_field`] or [`Host::get_widget`].
+#[derive(Debug)]
 pub struct Convert {
     /// `t-field` (else a `t-out` widget).
     pub field: bool,
@@ -232,6 +251,7 @@ pub struct Convert {
 }
 
 /// An argument of a `t-call`, evaluated in the caller's scope.
+#[derive_where(Debug; H::Value, H::Key, H::Opaque, H::Hook)]
 pub enum CallArg<H: Host> {
     /// `name="expr"`.
     Expr(H::Key, Ex<H>),
@@ -244,6 +264,7 @@ pub enum CallArg<H: Host> {
 }
 
 /// The template called by `t-call`.
+#[derive_where(Debug; H::Value, H::Key, H::Opaque, H::Hook)]
 pub enum CallTarget<H: Host> {
     /// Fixed reference.
     Static(TemplateRef),
@@ -253,6 +274,7 @@ pub enum CallTarget<H: Host> {
 }
 
 /// `t-call`.
+#[derive_where(Debug; H::Value, H::Key, H::Opaque, H::Hook)]
 pub struct Call<H: Host> {
     /// Block rendering the body (`values[0]`), if any.
     pub body: Option<usize>,
@@ -267,6 +289,7 @@ pub struct Call<H: Host> {
 }
 
 /// `t-foreach` / `t-as`, with the interned keys of the loop variables.
+#[derive_where(Debug; H::Value, H::Key, H::Opaque, H::Hook)]
 pub struct Foreach<H: Host> {
     /// Iterated expression, or a constant count for digit-only expressions.
     pub source: Result<Ex<H>, i64>,
@@ -299,6 +322,7 @@ pub struct Foreach<H: Host> {
 }
 
 /// `t-call-assets`, rendered through [`Host::get_asset_nodes`].
+#[derive(Debug)]
 pub struct Assets {
     /// Bundle name.
     pub bundle: Box<str>,
@@ -319,6 +343,7 @@ pub struct Assets {
 }
 
 /// A statement of a compiled function body.
+#[derive_where(Debug; H::Value, H::Key, H::Opaque, H::Hook)]
 pub enum Stmt<H: Host> {
     /// `yield 'literal'`.
     Text(Box<str>),
@@ -438,6 +463,7 @@ pub enum Stmt<H: Host> {
 }
 
 /// A compiled template.
+#[derive_where(Debug; H::Value, H::Key, H::Opaque, H::Hook)]
 pub struct Program<H: Host> {
     /// Function bodies; `main` is the template content.
     pub blocks: Vec<Vec<Stmt<H>>>,

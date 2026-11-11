@@ -1,16 +1,19 @@
-//! XPath 1.0 over a [`qweb_core::xml::Document`] (lxml data model).
+//! `XPath` 1.0 over a [`qweb_core::xml::Document`] (lxml data model).
 //!
 //! Supports the full expression grammar (axes, predicates, unions, operators,
 //! the core function library) plus Odoo's `hasclass(*classes)` extension and
 //! lxml `ETXPath` names in Clark notation (`{uri}local`). Prefixed names and
 //! variables are not supported (Odoo has no namespace mapping for them).
 
+// XPath compares numbers exactly, as IEEE 754 doubles.
+#![allow(clippy::float_cmp)]
+
 use core::{fmt, hash::Hash};
 use std::collections::HashMap;
 
 use qweb_core::xml::{Document, NodeId, NodeKind, XStr, local_name, namespace};
 
-/// A node of the XPath data model.
+/// A node of the `XPath` data model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum XNode {
     /// Document node above the tree whose root element is the given node.
@@ -25,7 +28,7 @@ pub enum XNode {
     Attr(NodeId, u32),
 }
 
-/// Invalid XPath expression or evaluation error.
+/// Invalid `XPath` expression or evaluation error.
 #[derive(Debug, Clone, PartialEq)]
 pub struct XPathError(pub String);
 
@@ -70,7 +73,7 @@ enum Tok {
     OpName(&'static str),
     Lit(String),
     Num(f64),
-    /// Name (NCName, `prefix:local`, `{uri}local` or `{uri}*`, `prefix:*`).
+    /// Name (`NCName`, `prefix:local`, `{uri}local` or `{uri}*`, `prefix:*`).
     Name(String),
     Var(String),
 }
@@ -111,75 +114,75 @@ fn lex(src: &str) -> Res<Vec<Tok>> {
             b' ' | b'\t' | b'\n' | b'\r' => i += 1,
             b'/' if b.get(i + 1) == Some(&b'/') => {
                 out.push(Tok::DSlash);
-                i += 2
+                i += 2;
             }
             b'/' => {
                 out.push(Tok::Slash);
-                i += 1
+                i += 1;
             }
             b'[' => {
                 out.push(Tok::LBrack);
-                i += 1
+                i += 1;
             }
             b']' => {
                 out.push(Tok::RBrack);
-                i += 1
+                i += 1;
             }
             b'(' => {
                 out.push(Tok::LParen);
-                i += 1
+                i += 1;
             }
             b')' => {
                 out.push(Tok::RParen);
-                i += 1
+                i += 1;
             }
             b'@' => {
                 out.push(Tok::At);
-                i += 1
+                i += 1;
             }
             b',' => {
                 out.push(Tok::Comma);
-                i += 1
+                i += 1;
             }
             b':' if b.get(i + 1) == Some(&b':') => {
                 out.push(Tok::DColon);
-                i += 2
+                i += 2;
             }
             b'|' => {
                 out.push(Tok::Pipe);
-                i += 1
+                i += 1;
             }
             b'+' => {
                 out.push(Tok::Plus);
-                i += 1
+                i += 1;
             }
             b'-' => {
                 out.push(Tok::Minus);
-                i += 1
+                i += 1;
             }
             b'=' => {
                 out.push(Tok::Eq);
-                i += 1
+                i += 1;
             }
             b'!' if b.get(i + 1) == Some(&b'=') => {
                 out.push(Tok::Neq);
-                i += 2
+                i += 2;
             }
             b'<' if b.get(i + 1) == Some(&b'=') => {
                 out.push(Tok::Le);
-                i += 2
+                i += 2;
             }
             b'<' => {
                 out.push(Tok::Lt);
-                i += 1
+                i += 1;
             }
             b'>' if b.get(i + 1) == Some(&b'=') => {
                 out.push(Tok::Ge);
-                i += 2
+                i += 2;
             }
             b'>' => {
                 out.push(Tok::Gt);
-                i += 1
+                i += 1;
             }
             b'*' => {
                 if operator_ctx(&out) {
@@ -187,7 +190,7 @@ fn lex(src: &str) -> Res<Vec<Tok>> {
                 } else {
                     out.push(Tok::Name("*".into()));
                 }
-                i += 1
+                i += 1;
             }
             b'"' | b'\'' => {
                 let end = src[i + 1..].find(c as char).map(|e| i + 1 + e);
@@ -199,11 +202,11 @@ fn lex(src: &str) -> Res<Vec<Tok>> {
             }
             b'.' if b.get(i + 1) == Some(&b'.') => {
                 out.push(Tok::DDot);
-                i += 2
+                i += 2;
             }
             b'.' if !b.get(i + 1).is_some_and(u8::is_ascii_digit) => {
                 out.push(Tok::Dot);
-                i += 1
+                i += 1;
             }
             b'0'..=b'9' | b'.' => {
                 let start = i;
@@ -799,7 +802,7 @@ fn uses_position(e: &Expr) -> bool {
     }
 }
 
-/// A compiled XPath expression.
+/// A compiled `XPath` expression.
 #[derive(Debug, Clone)]
 pub struct XPath {
     expr: Expr,
@@ -811,13 +814,17 @@ pub enum Dialect {
     /// lxml with Odoo's `hasclass` (class attribute split on whitespace).
     #[default]
     Lxml,
-    /// Browser XPath with `hasclass` rewritten like `template_inheritance.js`
+    /// Browser `XPath` with `hasclass` rewritten like `template_inheritance.js`
     /// (`contains(concat(' ', @class, ' '), ' c ')`).
     Browser,
 }
 
 impl XPath {
-    /// Parse an XPath 1.0 expression.
+    /// Parse an `XPath` 1.0 expression.
+    ///
+    /// # Errors
+    ///
+    /// The expression is empty or not valid `XPath` 1.0.
     pub fn parse(src: &str) -> Res<XPath> {
         let toks = lex(src)?;
         if toks.is_empty() {
@@ -832,6 +839,11 @@ impl XPath {
     }
 
     /// Evaluate on any [`Tree`]; returns the node-set in document order.
+    ///
+    /// # Errors
+    ///
+    /// The expression does not evaluate to a node-set, or calls an unknown
+    /// function or one with wrong arguments.
     pub fn select_in<T: Tree>(&self, tree: &T, context: T::N, dialect: Dialect) -> Res<Vec<T::N>> {
         let mut ev = Eval {
             t: tree,
@@ -853,6 +865,10 @@ impl XPath {
 
     /// Evaluate with `context` as context node (lxml model); returns the
     /// node-set in document order, without the document node (like lxml).
+    ///
+    /// # Errors
+    ///
+    /// As for [`XPath::select_in`].
     pub fn select(&self, doc: &Document, context: NodeId) -> Res<Vec<XNode>> {
         let n = self.select_in(&LxmlTree(doc), XNode::Node(context), Dialect::Lxml)?;
         Ok(n.into_iter()
@@ -861,7 +877,10 @@ impl XPath {
     }
 
     /// First element of the node-set (lxml `xpath(...)[0]`), `None` if empty.
-    /// A first node that is not an element is an error.
+    ///
+    /// # Errors
+    ///
+    /// As for [`XPath::select_in`], or the first node is not an element.
     pub fn first_element(&self, doc: &Document, context: NodeId) -> Res<Option<NodeId>> {
         match self.select(doc, context)?.first() {
             None => Ok(None),
@@ -874,7 +893,7 @@ impl XPath {
 // ---------------------------------------------------------------- tree model
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// XPath node type.
+/// `XPath` node type.
 pub enum Kind {
     /// Document node.
     Root,
@@ -890,7 +909,7 @@ pub enum Kind {
     Attr,
 }
 
-/// The XPath data model over some tree representation.
+/// The `XPath` data model over some tree representation.
 pub trait Tree {
     /// Node handle.
     type N: Copy + Eq + Hash + std::fmt::Debug;
@@ -917,11 +936,12 @@ pub trait Tree {
 }
 
 /// The lxml model of a [`Document`].
+#[derive(Debug)]
 pub struct LxmlTree<'a>(pub &'a Document);
 
 impl LxmlTree<'_> {
-    fn has_text(s: &Option<XStr>) -> bool {
-        s.as_deref().is_some_and(|s| !s.is_empty())
+    fn has_text(s: Option<&XStr>) -> bool {
+        s.is_some_and(|s| !s.is_empty())
     }
 }
 
@@ -958,12 +978,12 @@ impl Tree for LxmlTree<'_> {
             XNode::Root(top) => out.push(XNode::Node(top)),
             XNode::Node(id) if self.0.nodes[id].kind == NodeKind::Element => {
                 let node = &self.0.nodes[id];
-                if Self::has_text(&node.text) {
+                if Self::has_text(node.text.as_ref()) {
                     out.push(XNode::Text(id));
                 }
                 for &c in &node.children {
                     out.push(XNode::Node(c));
-                    if Self::has_text(&self.0.nodes[c].tail) {
+                    if Self::has_text(self.0.nodes[c].tail.as_ref()) {
                         out.push(XNode::Tail(c));
                     }
                 }
@@ -1054,34 +1074,30 @@ struct Eval<'a, T: Tree> {
     dialect: Dialect,
 }
 
-impl<'a, T: Tree> Eval<'a, T> {
+impl<T: Tree> Eval<'_, T> {
     fn key(&mut self, n: T::N) -> u32 {
-        if self.order.is_none() {
+        let t = self.t;
+        let order = self.order.get_or_insert_with(|| {
             let mut map = HashMap::new();
             let mut counter = 0u32;
-            let mut stack = vec![self.t.document(n)];
+            let mut stack = vec![t.document(n)];
             let mut buf = Vec::new();
             while let Some(x) = stack.pop() {
                 map.insert(x, counter);
                 counter += 1;
                 buf.clear();
-                self.t.attributes(x, &mut buf);
+                t.attributes(x, &mut buf);
                 for &a in &buf {
                     map.insert(a, counter);
                     counter += 1;
                 }
                 buf.clear();
-                self.t.children(x, &mut buf);
+                t.children(x, &mut buf);
                 stack.extend(buf.iter().rev());
             }
-            self.order = Some(map);
-        }
-        self.order
-            .as_ref()
-            .unwrap()
-            .get(&n)
-            .copied()
-            .unwrap_or(u32::MAX)
+            map
+        });
+        order.get(&n).copied().unwrap_or(u32::MAX)
     }
 
     fn sort_dedup(&mut self, mut nodes: Vec<T::N>) -> Vec<T::N> {
@@ -1152,8 +1168,9 @@ impl<'a, T: Tree> Eval<'a, T> {
             Axis::PrecedingSibling => out = self.siblings(n, false),
             Axis::Following => {
                 let mut cur = Some(n);
-                if self.t.kind(n) == Kind::Attr {
-                    let el = self.t.parent(n).unwrap();
+                if self.t.kind(n) == Kind::Attr
+                    && let Some(el) = self.t.parent(n)
+                {
                     self.descendants(el, &mut out);
                     cur = Some(el);
                 }
@@ -1167,10 +1184,9 @@ impl<'a, T: Tree> Eval<'a, T> {
             }
             Axis::Preceding => {
                 // reverse document order, excluding ancestors
-                let mut cur = Some(if self.t.kind(n) == Kind::Attr {
-                    self.t.parent(n).unwrap()
-                } else {
-                    n
+                let mut cur = Some(match (self.t.kind(n), self.t.parent(n)) {
+                    (Kind::Attr, Some(el)) => el,
+                    _ => n,
                 });
                 while let Some(c) = cur {
                     for s in self.siblings(c, false) {
@@ -1279,7 +1295,7 @@ impl<'a, T: Tree> Eval<'a, T> {
             };
             let keep = match self.eval(pred, &ctx)? {
                 Val::Num(x) => x == (i + 1) as f64,
-                v => self.boolean(&v),
+                v => Self::boolean(&v),
             };
             if keep {
                 out.push(n);
@@ -1335,18 +1351,18 @@ impl<'a, T: Tree> Eval<'a, T> {
             Expr::Bin(Op::Or, a, b) => {
                 let l = self.eval(a, ctx)?;
                 Val::Bool(
-                    self.boolean(&l) || {
+                    Self::boolean(&l) || {
                         let r = self.eval(b, ctx)?;
-                        self.boolean(&r)
+                        Self::boolean(&r)
                     },
                 )
             }
             Expr::Bin(Op::And, a, b) => {
                 let l = self.eval(a, ctx)?;
                 Val::Bool(
-                    self.boolean(&l) && {
+                    Self::boolean(&l) && {
                         let r = self.eval(b, ctx)?;
-                        self.boolean(&r)
+                        Self::boolean(&r)
                     },
                 )
             }
@@ -1426,7 +1442,7 @@ impl<'a, T: Tree> Eval<'a, T> {
             }
             _ if eqop => {
                 let eq = match (l, r) {
-                    (Val::Bool(_), _) | (_, Val::Bool(_)) => self.boolean(l) == self.boolean(r),
+                    (Val::Bool(_), _) | (_, Val::Bool(_)) => Self::boolean(l) == Self::boolean(r),
                     (Val::Num(_), _) | (_, Val::Num(_)) => self.number(l) == self.number(r),
                     _ => self.string(l) == self.string(r),
                 };
@@ -1463,7 +1479,7 @@ impl<'a, T: Tree> Eval<'a, T> {
         })
     }
 
-    fn boolean(&self, v: &Val<T::N>) -> bool {
+    fn boolean(v: &Val<T::N>) -> bool {
         match v {
             Val::Nodes(n) => !n.is_empty(),
             Val::Str(s) => !s.is_empty(),
@@ -1475,7 +1491,7 @@ impl<'a, T: Tree> Eval<'a, T> {
     fn number(&self, v: &Val<T::N>) -> f64 {
         match v {
             Val::Num(x) => *x,
-            Val::Bool(b) => *b as u8 as f64,
+            Val::Bool(b) => f64::from(u8::from(*b)),
             _ => str_to_num(&self.string(v)),
         }
     }
@@ -1624,11 +1640,11 @@ impl<'a, T: Tree> Eval<'a, T> {
             }
             "boolean" => {
                 argc(1, 1)?;
-                Val::Bool(self.boolean(&vals[0]))
+                Val::Bool(Self::boolean(&vals[0]))
             }
             "not" => {
                 argc(1, 1)?;
-                Val::Bool(!self.boolean(&vals[0]))
+                Val::Bool(!Self::boolean(&vals[0]))
             }
             "true" => {
                 argc(0, 0)?;

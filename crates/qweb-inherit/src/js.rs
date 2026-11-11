@@ -84,6 +84,10 @@ pub fn rewrite_hasclass(xpath: &str) -> String {
 /// `CLASS_CONTAINS_REGEX = /contains\(@class.*\)/g` used with `.test()`:
 /// the `lastIndex` state (in UTF-16 units) persists between calls.
 #[derive(Debug, Default, Clone)]
+#[allow(
+    missing_copy_implementations,
+    reason = "stateful: an implicit copy would fork `lastIndex`"
+)]
 pub struct ClassContainsRegex {
     last_index: usize,
 }
@@ -108,7 +112,7 @@ impl ClassContainsRegex {
                 }
                 if let Some(j) = (i + pat.len()..end)
                     .rev()
-                    .find(|&j| units[j] == b')' as u16)
+                    .find(|&j| units[j] == u16::from(b')'))
                 {
                     self.last_index = j + 1;
                     return true;
@@ -141,7 +145,7 @@ impl JsInheritance {
         }
     }
 
-    fn get_translation_context(&self, dom: &Dom, mut node: DomId) -> Res<String> {
+    fn get_translation_context(dom: &Dom, mut node: DomId) -> Res<String> {
         loop {
             if let Some(v) = dom.node(node).get(TCTX) {
                 return Ok(v.to_owned());
@@ -274,7 +278,7 @@ impl JsInheritance {
             if c.kind == DomKind::Element && c.name == "xpath" && c.get("position") == Some("move")
             {
                 let node = self.get_element(dom, element, child)?;
-                let ctx = self.get_translation_context(dom, node)?;
+                let ctx = Self::get_translation_context(dom, node)?;
                 dom.node_mut(node).set(TCTX, ctx);
                 remove_node(dom, node);
                 nodes.push(node);
@@ -363,13 +367,13 @@ impl JsInheritance {
             }
             let ctx = self.translation_context.clone();
             let t = dom.node_mut(target);
-            if !value.is_empty() {
+            if value.is_empty() {
+                t.remove_attr(&name);
+            } else {
                 t.set(&name, value);
                 if add.is_empty() && remove.is_empty() {
                     t.set(&format!("{TCTX}-{name}"), ctx);
                 }
-            } else {
-                t.remove_attr(&name);
             }
         }
         Ok(())
@@ -408,7 +412,7 @@ impl JsInheritance {
                     }
                     out
                 };
-                let ctx = self.get_translation_context(dom, target)?;
+                let ctx = Self::get_translation_context(dom, target)?;
                 dom.node_mut(target).set(TCTX, ctx);
                 for loc in locs {
                     let first = dom.node(loc).children[0];
@@ -462,6 +466,12 @@ impl JsInheritance {
     }
 
     /// `applyInheritance(root, operations, url)`: returns the (possibly new) root.
+    ///
+    /// # Errors
+    ///
+    /// The errors `applyInheritance` throws: an invalid operation (unknown
+    /// `position` or `mode`, invalid `XPath` expression), a target that cannot
+    /// be found, or a DOM `HierarchyRequestError`.
     pub fn apply(
         &mut self,
         dom: &mut Dom,
@@ -470,7 +480,10 @@ impl JsInheritance {
         url: &str,
     ) -> Res<DomId> {
         self.warnings.clear();
-        self.translation_context = url.split('/').nth(1).unwrap_or("").to_owned();
+        url.split('/')
+            .nth(1)
+            .unwrap_or("")
+            .clone_into(&mut self.translation_context);
         let ops: Vec<DomId> = dom
             .node(operations)
             .children
@@ -574,7 +587,9 @@ pub fn apply_context_to_text_nodes(dom: &mut Dom, root: DomId) {
         stack.extend(n.children.iter().copied());
     }
     for text in texts {
-        let ctx = dom.node_mut(text).tctx.take().unwrap();
+        let Some(ctx) = dom.node_mut(text).tctx.take() else {
+            continue;
+        };
         let wrapper = dom.create_element("t", Some(XHTML_NS));
         dom.node_mut(wrapper).set(TCTX, ctx);
         if dom.before(text, &[wrapper]).is_ok() && dom.node(wrapper).parent.is_some() {

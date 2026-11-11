@@ -12,4 +12,8 @@ categories.workspace = true
 readme = "../../README.md"
 
 [dependencies]
+derive-where.workspace = true
 memchr.workspace = true
+
+[lints]
+workspace = true

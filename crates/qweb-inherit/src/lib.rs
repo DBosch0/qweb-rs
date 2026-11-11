@@ -1,4 +1,4 @@
-//! Odoo template inheritance with its own XPath 1.0 engine, usable from
+//! Odoo template inheritance with its own `XPath` 1.0 engine, usable from
 //! Python and WASM, in two dialects:
 //! * [`inherit`]: port of `odoo/tools/template_inheritance.py` (server, lxml model);
 //! * [`js`]: port of `web/static/src/core/template_inheritance.js` (browser, DOM model).

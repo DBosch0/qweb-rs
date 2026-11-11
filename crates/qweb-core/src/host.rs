@@ -1,10 +1,11 @@
 //! The [`Host`] trait: everything value-related is delegated to the host.
 //!
 //! The core never inspects values itself. The Python binding implements the
-//! trait on top of the CPython object protocol (giving exact Python
+//! trait on top of the `CPython` object protocol (giving exact Python
 //! semantics); `qweb-value` provides a pure-Rust implementation.
 
 use core::fmt;
+use derive_where::derive_where;
 use std::sync::Arc;
 
 use crate::compile::CompileApi;
@@ -49,6 +50,7 @@ impl fmt::Display for TemplateRef {
 }
 
 /// Result of [`Host::load`].
+#[derive_where(Debug; H::Value, H::Key, H::Opaque, H::Hook)]
 pub enum Loaded<H: Host> {
     /// XML source, compiled and cached by the [`Engine`](crate::Engine).
     Source {
@@ -109,6 +111,7 @@ pub struct CompileOptions {
 }
 
 /// How `t-foreach` iterates a value (see `_compile_directive_foreach`).
+#[derive(Debug)]
 pub struct LoopSource<I> {
     /// The items.
     pub iter: I,
@@ -122,6 +125,7 @@ pub struct LoopSource<I> {
 pub type Pairs<V> = Vec<(V, V)>;
 
 /// Result of a field/widget conversion: `(attributes, content, force_display)`.
+#[derive(Debug)]
 pub struct Converted<V> {
     /// Attributes to add to the element.
     pub attrs: Vec<(V, V)>,
@@ -140,6 +144,20 @@ pub struct Converted<V> {
 /// or assets) and disable the extension hooks.
 ///
 /// Hosts must be `Send + Sync`: compiled programs are shared between threads.
+/// Compiled programs implement `Debug` when the host and its value, key,
+/// opaque and hook types do.
+///
+/// # Errors
+///
+/// A method returns an [`Error`] where the Python engine would raise: the
+/// matching [`ErrorKind`](crate::ErrorKind) for errors the host detects itself
+/// (e.g. a `KeyError` for a missing key), or [`Error::host`] wrapping the
+/// host's own error (e.g. a Python exception). The engine adds the template
+/// location and passes the error through to the caller.
+#[allow(
+    clippy::missing_errors_doc,
+    reason = "the errors of every method are described above"
+)]
 pub trait Host: Sized + Send + Sync + 'static {
     /// A template value (a Python object for the Python binding).
     type Value: Clone + Send + Sync;

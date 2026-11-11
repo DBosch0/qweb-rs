@@ -1,6 +1,6 @@
 //! Minimal XML parser producing an lxml-like tree (`text`/`tail` model).
 //!
-//! It reproduces the lxml behaviour the QWeb compiler relies on:
+//! It reproduces the lxml behaviour the `QWeb` compiler relies on:
 //! * entities and character references are decoded, CDATA is merged into text;
 //! * line endings are normalised (`\r\n` and `\r` become `\n`);
 //! * literal tabs/newlines in attribute values become spaces;
@@ -43,7 +43,7 @@ pub fn empty_nsmap() -> NsMap {
 }
 
 /// A node of a [`Document`].
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Node {
     /// Node kind.
     pub kind: NodeKind,
@@ -135,6 +135,7 @@ pub fn namespace(name: &str) -> Option<&str> {
 }
 
 /// A parsed XML tree.
+#[derive(Debug)]
 pub struct Document {
     /// Node arena; [`NodeId`]s index it.
     pub nodes: Vec<Node>,
@@ -145,6 +146,10 @@ pub struct Document {
 impl Document {
     /// Parse an XML document (like `etree.fromstring`); only the root element
     /// is kept, the prolog and trailing comments/PIs are skipped.
+    ///
+    /// # Errors
+    ///
+    /// The source is not well-formed XML, or has no root element.
     pub fn parse(src: &str) -> Result<Document, XmlError> {
         Parser::new(src).parse()
     }
@@ -250,11 +255,21 @@ impl Document {
     }
 
     /// lxml `target.addprevious(new)` (`new` is moved with its tail).
+    ///
+    /// # Errors
+    ///
+    /// `target` is the root element (it can have no element siblings), or
+    /// `new` is an ancestor of `target`.
     pub fn add_previous(&mut self, target: NodeId, new: NodeId) -> Result<(), &'static str> {
         self.add_sibling(target, new, 0)
     }
 
     /// lxml `target.addnext(new)` (`new` is moved with its tail).
+    ///
+    /// # Errors
+    ///
+    /// `target` is the root element (it can have no element siblings), or
+    /// `new` is an ancestor of `target`.
     pub fn add_next(&mut self, target: NodeId, new: NodeId) -> Result<(), &'static str> {
         self.add_sibling(target, new, 1)
     }
@@ -268,7 +283,7 @@ impl Document {
         if new == target {
             return Ok(());
         }
-        let Some(_) = self.nodes[target].parent else {
+        let Some(parent) = self.nodes[target].parent else {
             return Err(
                 "Only processing instructions and comments can be siblings of the root element",
             );
@@ -281,7 +296,6 @@ impl Document {
             cur = self.nodes[c].parent;
         }
         self.detach(new);
-        let parent = self.nodes[target].parent.unwrap();
         let index = self.index_in_parent(target).unwrap_or(0);
         self.insert(parent, index + offset, new);
         Ok(())
@@ -424,6 +438,10 @@ impl Document {
     }
 
     /// Pre-order iteration over elements (like lxml `iter()`, comments included).
+    #[allow(
+        clippy::iter_not_returning_iterator,
+        reason = "named after lxml's `iter()`"
+    )]
     pub fn iter(&self, start: NodeId) -> Vec<NodeId> {
         self.descendants(start).collect()
     }
@@ -510,6 +528,14 @@ impl Document {
 pub struct Descendants<'d> {
     doc: &'d Document,
     stack: Vec<NodeId>,
+}
+
+impl fmt::Debug for Descendants<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Descendants")
+            .field("stack", &self.stack)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Iterator for Descendants<'_> {

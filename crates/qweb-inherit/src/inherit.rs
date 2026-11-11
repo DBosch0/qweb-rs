@@ -1,5 +1,6 @@
 //! Port of `odoo/tools/template_inheritance.py` (`apply_inheritance_specs`).
 
+use core::fmt::Write as _;
 use core::{error, fmt};
 
 use qweb_core::compile::py_repr_str as py_repr;
@@ -86,6 +87,12 @@ fn rstrip_match(s: Option<&str>) -> &str {
 }
 
 /// Locate a node of `arch` matching `spec` (`locate_node`).
+///
+/// # Errors
+///
+/// The spec is invalid: an `xpath` without `expr`, or an invalid `XPath`
+/// expression ([`ErrorKind::Validation`]); or evaluating the expression
+/// failed ([`ErrorKind::Value`]).
 pub fn locate_node(
     doc: &Document,
     arch: NodeId,
@@ -136,21 +143,18 @@ fn add_text_before(
     text: Option<XStr>,
 ) -> Result<(), InheritError> {
     let Some(text) = text else { return Ok(()) };
-    match doc.prev_sibling(node) {
-        Some(prev) => {
-            let n = doc.node_mut(prev);
-            n.tail = Some(match n.tail.take() {
-                None => text,
-                Some(t) => (t.into_string() + &text).into(),
-            });
-        }
-        None => {
-            let Some(parent) = doc.node(node).parent else {
-                return value_err("'NoneType' object has no attribute 'text'".into());
-            };
-            let n = doc.node_mut(parent);
-            n.text = Some((py_rstrip(n.text.as_deref().unwrap_or("")).to_owned() + &text).into());
-        }
+    if let Some(prev) = doc.prev_sibling(node) {
+        let n = doc.node_mut(prev);
+        n.tail = Some(match n.tail.take() {
+            None => text,
+            Some(t) => (t.into_string() + &text).into(),
+        });
+    } else {
+        let Some(parent) = doc.node(node).parent else {
+            return value_err("'NoneType' object has no attribute 'text'".into());
+        };
+        let n = doc.node_mut(parent);
+        n.text = Some((py_rstrip(n.text.as_deref().unwrap_or("")).to_owned() + &text).into());
     }
     Ok(())
 }
@@ -231,16 +235,14 @@ impl Applier<'_> {
         node: NodeId,
         spec: NodeId,
     ) -> Result<(), InheritError> {
-        if self.doc.node(node).parent.is_none() {
+        let Some(parent) = self.doc.node(node).parent else {
             return value_err("'NoneType' object has no attribute 'text'".into());
-        }
+        };
         let spec_text = self.doc.node(spec).text.clone();
         let text = spec_text.clone().unwrap_or_default();
 
         let prev = {
             let doc = &*self.doc;
-            // checked above
-            let parent = doc.node(node).parent.unwrap();
             let idx = doc.index_in_parent(node).unwrap_or(0);
             doc.node(parent).children[..idx]
                 .iter()
@@ -251,7 +253,6 @@ impl Applier<'_> {
         let before_text;
         match prev {
             None => {
-                let parent = self.doc.node(node).parent.unwrap();
                 let p = self.doc.node_mut(parent);
                 before_text = rstrip_match(p.text.as_deref()).to_owned();
                 let new = py_rstrip(p.text.as_deref().unwrap_or("")).to_owned() + &text;
@@ -303,12 +304,10 @@ impl Applier<'_> {
             }
             let Some(node) = self.locate(spec)? else {
                 let s = self.doc.node(spec);
-                let attrs: String = s
-                    .attrs
-                    .iter()
-                    .filter(|(k, _)| k != "position")
-                    .map(|(k, v)| format!(" {k}=\"{}\"", html_escape(v)))
-                    .collect();
+                let mut attrs = String::new();
+                for (k, v) in s.attrs.iter().filter(|(k, _)| k != "position") {
+                    let _ = write!(attrs, " {k}=\"{}\"", html_escape(v));
+                }
                 return value_err(format!(
                     "Element '<{}{attrs}>' cannot be located in parent view",
                     s.tag
@@ -580,10 +579,10 @@ impl Applier<'_> {
                 c.text.as_deref().unwrap_or("").to_owned()
             };
             let n = self.doc.node_mut(node);
-            if !value.is_empty() {
-                n.set(&attribute, value);
-            } else {
+            if value.is_empty() {
                 n.pop(&attribute);
+            } else {
+                n.set(&attribute, value);
             }
         }
         Ok(())
@@ -613,6 +612,12 @@ fn full_match_parens(remove: &str, value: &str) -> Result<bool, InheritError> {
 ///
 /// Returns the root of the resulting tree (a new node when the root itself is
 /// replaced). `pre_locate` is called with each spec before it is located.
+///
+/// # Errors
+///
+/// As in Odoo: an invalid spec or `XPath` expression
+/// ([`ErrorKind::Validation`]), or a spec that cannot be applied, such as a
+/// node that cannot be located in the parent view ([`ErrorKind::Value`]).
 pub fn apply_inheritance_specs<'a>(
     doc: &'a mut Document,
     source: NodeId,
@@ -630,6 +635,11 @@ pub fn apply_inheritance_specs<'a>(
 
 /// String API: parse `source` and each spec tree, apply them in order and
 /// serialize the result (like `etree.tostring(result, encoding='unicode')`).
+///
+/// # Errors
+///
+/// The source or a spec is not well-formed XML ([`ErrorKind::Value`]), or a
+/// spec fails to apply (see [`apply_inheritance_specs`]).
 pub fn apply_inheritance_str(
     source: &str,
     specs: &[&str],
@@ -660,7 +670,7 @@ mod tests {
     }
 
     /// A nested `move` that extracts Odoo's temporary sentinel: errors (with
-    /// Odoo's `AttributeError` message), never a panic. See README_PRIV.md,
+    /// Odoo's `AttributeError` message), never a panic. See `README_PRIV.md`,
     /// "Odoo edge cases".
     #[test]
     fn moved_sentinel() {

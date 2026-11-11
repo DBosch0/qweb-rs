@@ -1,4 +1,16 @@
 //! Operators, builtins and methods with Python semantics.
+//!
+//! # Errors
+//!
+//! Every function fails where Python raises, with the matching
+//! [`ErrorKind`](qweb_core::ErrorKind): `TypeError` for unsupported operand
+//! types or arguments, `KeyError` or `IndexError` for missing items,
+//! `ValueError`, `ZeroDivisionError`, and so on. Integers are 64-bit: an
+//! overflow is an error where Python would switch to a big integer.
+#![allow(
+    clippy::missing_errors_doc,
+    reason = "the errors are Python's, described above"
+)]
 
 use core::cmp::Ordering;
 use std::sync::Arc;
@@ -87,7 +99,7 @@ fn repeat(items: &[Value], n: i64) -> Vec<Value> {
 
 /// `a <op> b`.
 pub fn binary(op: BinOp, a: &Value, b: &Value) -> Result<Value> {
-    use Value::*;
+    use Value::{Bool, Bytes, Float, Int, Lazy, List, Markup, Str, Tuple};
     // Markup arithmetic: the other operand is escaped.
     if op == BinOp::Add {
         match (a, b) {
@@ -143,14 +155,14 @@ pub fn binary(op: BinOp, a: &Value, b: &Value) -> Result<Value> {
             BinOp::RShift => Int(x >> y.clamp(0, 63)),
             BinOp::BitAnd => {
                 if let (Bool(p), Bool(q)) = (a, b) {
-                    Bool(*p & *q)
+                    Bool(*p && *q)
                 } else {
                     Int(x & y)
                 }
             }
             BinOp::BitOr => {
                 if let (Bool(p), Bool(q)) = (a, b) {
-                    Bool(*p | *q)
+                    Bool(*p || *q)
                 } else {
                     Int(x | y)
                 }
@@ -197,7 +209,7 @@ pub fn binary(op: BinOp, a: &Value, b: &Value) -> Result<Value> {
         (BinOp::Mul, Str(s) | Markup(s), n) | (BinOp::Mul, n, Str(s) | Markup(s))
             if n.as_i64().is_some() =>
         {
-            let r = s.repeat(n.as_i64().unwrap().max(0) as usize);
+            let r = s.repeat(n.as_i64().unwrap_or_default().max(0) as usize);
             Ok(if matches!(a, Markup(_)) || matches!(b, Markup(_)) {
                 Value::markup(&r)
             } else {
@@ -205,11 +217,11 @@ pub fn binary(op: BinOp, a: &Value, b: &Value) -> Result<Value> {
             })
         }
         (BinOp::Mul, List(v), n) | (BinOp::Mul, n, List(v)) if n.as_i64().is_some() => {
-            Ok(Value::list(repeat(v, n.as_i64().unwrap())))
+            Ok(Value::list(repeat(v, n.as_i64().unwrap_or_default())))
         }
-        (BinOp::Mul, Tuple(v), n) | (BinOp::Mul, n, Tuple(v)) if n.as_i64().is_some() => {
-            Ok(Value::Tuple(Arc::new(repeat(v, n.as_i64().unwrap()))))
-        }
+        (BinOp::Mul, Tuple(v), n) | (BinOp::Mul, n, Tuple(v)) if n.as_i64().is_some() => Ok(
+            Value::Tuple(Arc::new(repeat(v, n.as_i64().unwrap_or_default()))),
+        ),
         _ => {
             if op == BinOp::Add && matches!((a, b), (Str(_), _) | (_, Str(_))) {
                 return Err(Error::type_error(format!(
@@ -329,12 +341,15 @@ fn percent_format(fmt: &str, args: &Value, markup: bool) -> Result<String> {
 pub fn unary(op: UnOp, v: &Value) -> Result<Value> {
     Ok(match (op, v) {
         (UnOp::Neg, Value::Float(f)) => Value::Float(-f),
-        (UnOp::Neg, x) if x.as_i64().is_some() => {
-            Value::Int(x.as_i64().unwrap().checked_neg().ok_or_else(overflow)?)
-        }
+        (UnOp::Neg, x) if x.as_i64().is_some() => Value::Int(
+            x.as_i64()
+                .unwrap_or_default()
+                .checked_neg()
+                .ok_or_else(overflow)?,
+        ),
         (UnOp::Pos, Value::Float(f)) => Value::Float(*f),
-        (UnOp::Pos, x) if x.as_i64().is_some() => Value::Int(x.as_i64().unwrap()),
-        (UnOp::Invert, x) if x.as_i64().is_some() => Value::Int(!x.as_i64().unwrap()),
+        (UnOp::Pos, x) if x.as_i64().is_some() => Value::Int(x.as_i64().unwrap_or_default()),
+        (UnOp::Invert, x) if x.as_i64().is_some() => Value::Int(!x.as_i64().unwrap_or_default()),
         (_, x) => {
             return Err(Error::type_error(format!(
                 "bad operand type for unary op: '{}'",
@@ -351,6 +366,7 @@ pub fn compare(op: CmpOp, a: &Value, b: &Value) -> Result<Value> {
     if let (Some(x), Some(y)) = (a.as_f64(), b.as_f64())
         && (matches!(a, Value::Float(_)) || matches!(b, Value::Float(_)))
     {
+        #[allow(clippy::float_cmp, reason = "Python compares floats exactly")]
         return Ok(Value::Bool(match op {
             CmpOp::Eq => x == y,
             CmpOp::Ne => x != y,
@@ -590,7 +606,7 @@ pub fn call_method(recv: &Value, name: &str, args: &[Value]) -> Result<Value> {
             "lower" => wrap(s.to_lowercase()),
             "strip" => wrap(match args.first() {
                 Some(c) => s
-                    .trim_matches(|x| as_str(c).map(|c| c.contains(x)).unwrap_or(false))
+                    .trim_matches(|x| as_str(c).is_ok_and(|c| c.contains(x)))
                     .to_owned(),
                 None => s.trim().to_owned(),
             }),
@@ -648,11 +664,7 @@ pub fn call_method(recv: &Value, name: &str, args: &[Value]) -> Result<Value> {
             "find" => {
                 let needle_v = arg(args, 0, "find")?;
                 let needle = as_str(&needle_v)?;
-                Value::Int(
-                    s.find(needle)
-                        .map(|b| s[..b].chars().count() as i64)
-                        .unwrap_or(-1),
-                )
+                Value::Int(s.find(needle).map_or(-1, |b| s[..b].chars().count() as i64))
             }
             "isdigit" => Value::Bool(!s.is_empty() && s.chars().all(|c| c.is_ascii_digit())),
             "zfill" => {
@@ -707,9 +719,10 @@ pub fn call_method(recv: &Value, name: &str, args: &[Value]) -> Result<Value> {
         Value::Dict(d) => Ok(match name {
             "get" => {
                 let k = arg(args, 0, "get")?;
-                d.get(&k.hkey()?)
-                    .map(|(_, v)| v.clone())
-                    .unwrap_or_else(|| args.get(1).cloned().unwrap_or(Value::None))
+                d.get(&k.hkey()?).map_or_else(
+                    || args.get(1).cloned().unwrap_or(Value::None),
+                    |(_, v)| v.clone(),
+                )
             }
             "items" => Value::list(
                 d.values()
@@ -760,7 +773,7 @@ fn minmax(args: &[Value], max: bool) -> Result<Value> {
 
 fn to_int(v: &Value) -> Result<Value> {
     Ok(match v {
-        Value::Bool(b) => Value::Int(*b as i64),
+        Value::Bool(b) => Value::Int(i64::from(*b)),
         Value::Int(i) => Value::Int(*i),
         Value::Float(f) => Value::Int(f.trunc() as i64),
         Value::Str(s) => Value::Int(qweb_core::compile::py_int(s).ok_or_else(|| {
@@ -805,9 +818,19 @@ pub(crate) fn dict_pairs(v: &Value) -> Result<Vec<(Value, Value)>> {
 }
 
 /// Call a builtin function.
+// TODO: take `args: &[Value]` in the next breaking release (0.2): the
+// function never consumes the vector. Changing it now would break the API.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "public API of 0.1; see the NOTE above"
+)]
 pub fn call_builtin(b: Builtin, args: Vec<Value>) -> Result<Value> {
-    use Builtin::*;
-    let a0 = || arg(&args, 0, b.name());
+    use Builtin::{
+        Abs, All, Any, Bool, Chr, Dict, Divmod, Enumerate, Float, Int, Len, List, Max, Min, Ord,
+        Range, Repr, Round, Set, Sorted, Str, Sum, Tuple, Zip,
+    };
+    let args = args.as_slice();
+    let a0 = || arg(args, 0, b.name());
     Ok(match b {
         Len => Value::Int(a0()?.py_len()? as i64),
         Str => match args.first() {
@@ -842,8 +865,8 @@ pub fn call_builtin(b: Builtin, args: Vec<Value>) -> Result<Value> {
                     .abs(),
             ),
         },
-        Min => minmax(&args, false)?,
-        Max => minmax(&args, true)?,
+        Min => minmax(args, false)?,
+        Max => minmax(args, true)?,
         Sum => {
             let mut total = args.get(1).cloned().unwrap_or(Value::Int(0));
             for x in a0()?.iter_items()? {
@@ -993,7 +1016,7 @@ pub fn call_builtin(b: Builtin, args: Vec<Value>) -> Result<Value> {
             )
         }
         Divmod => {
-            let (a, b2) = (a0()?, arg(&args, 1, "divmod")?);
+            let (a, b2) = (a0()?, arg(args, 1, "divmod")?);
             Value::Tuple(Arc::new(vec![
                 binary(BinOp::FloorDiv, &a, &b2)?,
                 binary(BinOp::Mod, &a, &b2)?,
@@ -1006,8 +1029,8 @@ pub fn call_builtin(b: Builtin, args: Vec<Value>) -> Result<Value> {
 mod tests {
     use super::*;
 
-    fn call(b: &str, args: Vec<Value>) -> Result<Value> {
-        call_builtin(Builtin::from_name(b).unwrap(), args)
+    fn call(b: &str, args: &[Value]) -> Result<Value> {
+        call_builtin(Builtin::from_name(b).unwrap(), args.to_vec())
     }
 
     #[test]
@@ -1016,7 +1039,7 @@ mod tests {
             assert_eq!(Builtin::from_name(name).unwrap().name(), name);
         }
         assert_eq!(Builtin::from_name("xrange"), Some(Builtin::Range));
-        let err = call("len", vec![]).unwrap_err();
+        let err = call("len", &[]).unwrap_err();
         assert!(err.message().contains("len()"), "{}", err.message());
     }
 
@@ -1045,15 +1068,15 @@ mod tests {
     fn any_all() {
         let l = |v: Vec<Value>| Value::list(v);
         assert!(
-            call("any", vec![l(vec![Value::Int(0), Value::str("x")])])
+            call("any", &[l(vec![Value::Int(0), Value::str("x")])])
                 .unwrap()
                 .truthy()
                 .unwrap()
         );
-        assert!(!call("any", vec![l(vec![])]).unwrap().truthy().unwrap());
-        assert!(call("all", vec![l(vec![])]).unwrap().truthy().unwrap());
+        assert!(!call("any", &[l(vec![])]).unwrap().truthy().unwrap());
+        assert!(call("all", &[l(vec![])]).unwrap().truthy().unwrap());
         assert!(
-            !call("all", vec![l(vec![Value::Int(1), Value::None])])
+            !call("all", &[l(vec![Value::Int(1), Value::None])])
                 .unwrap()
                 .truthy()
                 .unwrap()
@@ -1085,9 +1108,9 @@ mod tests {
             Value::str("a"),
             Value::Int(1),
         ]))]);
-        assert_eq!(call("dict", vec![pairs]).unwrap().repr(), "{'a': 1}");
+        assert_eq!(call("dict", &[pairs]).unwrap().repr(), "{'a': 1}");
         let bad = Value::list(vec![Value::list(vec![Value::Int(1)])]);
-        assert!(call("dict", vec![bad]).is_err());
+        assert!(call("dict", &[bad]).is_err());
     }
 
     #[test]

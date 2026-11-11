@@ -4,7 +4,7 @@
 
 /// A piece of a format string.
 #[cfg_attr(test, derive(Debug, PartialEq))]
-pub enum FormatPart<'a> {
+pub(crate) enum FormatPart<'a> {
     /// Literal text, output as is.
     Lit(&'a str),
     /// Source of an interpolated expression (without `#{`/`{{` delimiters).

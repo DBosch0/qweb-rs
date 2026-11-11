@@ -252,8 +252,7 @@ impl From<LexError> for ParseError {
 /// An empty expression is the empty tuple.
 pub(crate) fn parse(src: &str, raise_on_missing: bool) -> Result<Expr, ParseError> {
     let toks = lexer::tokenize(src)?;
-    debug_assert!(!toks.is_empty(), "end token does not exist");
-    debug_assert!(toks.last().unwrap() == &Tok::End, "last token is end");
+    debug_assert_eq!(toks.last(), Some(&Tok::End), "the last token is End");
 
     let mut p = Parser {
         toks,
@@ -544,7 +543,7 @@ impl Parser {
             if self.eat_op(".") {
                 match self.next() {
                     Tok::Name(n) if !KEYWORDS.contains(&n.as_str()) => {
-                        e = Expr::Attr(Box::new(e), n)
+                        e = Expr::Attr(Box::new(e), n);
                     }
                     t => return Err(ParseError::Syntax(format!("invalid attribute name {t:?}"))),
                 }

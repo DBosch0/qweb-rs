@@ -55,7 +55,7 @@ enum Tag {
 /// Tag of each inline length.
 #[rustfmt::skip]
 const LENS: [Tag; INLINE + 1] = {
-    use Tag::*;
+    use Tag::{L0, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23};
     [L0, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14, L15, L16,
      L17, L18, L19, L20, L21, L22, L23]
 };
@@ -101,7 +101,7 @@ impl XStr {
     /// Take ownership of a heap string (any length).
     fn heap(s: Box<str>) -> Self {
         let len = s.len();
-        let ptr = Box::into_raw(s) as *mut u8;
+        let ptr = Box::into_raw(s).cast::<u8>();
         XStr {
             // SAFETY: `Box::into_raw` never returns null.
             data: Data {
@@ -129,7 +129,8 @@ impl XStr {
             // bytes of the `repr(C)` struct, contiguous and initialised (see
             // `XStr::inline`), and `bytes[..len]` is a copy of a whole `&str`.
             unsafe {
-                let bytes = std::slice::from_raw_parts(self as *const XStr as *const u8, len);
+                let bytes =
+                    std::slice::from_raw_parts(std::ptr::from_ref::<XStr>(self).cast::<u8>(), len);
                 std::str::from_utf8_unchecked(bytes)
             }
         } else {
@@ -318,7 +319,7 @@ impl Eq for XStr {}
 
 impl Hash for XStr {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.as_str().hash(state)
+        self.as_str().hash(state);
     }
 }
 

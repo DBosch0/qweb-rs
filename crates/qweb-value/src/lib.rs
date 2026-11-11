@@ -1,7 +1,7 @@
 //! # qweb-value
 //!
 //! Pure-Rust [`Host`] for `qweb-core` with Python-like values. Useful to
-//! render QWeb templates from Rust (or WASM) with JSON-like data, and as the
+//! render `QWeb` templates from Rust (or WASM) with JSON-like data, and as the
 //! reference host for tests and benchmarks.
 //!
 //! ```
@@ -18,7 +18,10 @@ pub mod ops;
 pub mod value;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::fmt;
+use std::sync::{
+    Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
+};
 
 use indexmap::IndexMap;
 use qweb_core::expr::{BinOp, CmpOp, UnOp};
@@ -32,7 +35,7 @@ pub use value::{Builtin, HKey, Value};
 pub type Scope = IndexMap<Arc<str>, Value>;
 
 /// Render options (`env.context`).
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Context {
     /// Context entries (`lang`, `preserve_comments`, ...).
     pub options: Arc<IndexMap<String, Value>>,
@@ -72,6 +75,31 @@ struct HostInner {
     empty: Arc<str>,
 }
 
+// Template sources and the loader closure are not shown.
+impl fmt::Debug for ValueHost {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let templates = read(&self.inner.templates).len();
+        f.debug_struct("ValueHost")
+            .field("templates", &templates)
+            .field("loader", &self.inner.loader.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+// The templates and warnings stay valid when a thread panicked while holding
+// their lock, so a poisoned lock is used as is.
+fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn write<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn lock<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
+    lock.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Key of `values[0]` (the t-call body); not reachable from expressions.
 const SLOT_KEY: &str = "\u{0}0";
 
@@ -87,8 +115,7 @@ impl ValueHost {
         let truthy = |k: &str| {
             ctx.options
                 .get(k)
-                .map(|v| v.truthy().unwrap_or(false))
-                .unwrap_or(false)
+                .is_some_and(|v| v.truthy().unwrap_or(false))
         };
         let mut extra = Vec::new();
         if let Some(lang) = ctx.options.get("lang") {
@@ -134,26 +161,27 @@ impl ValueHost {
     /// Register (or replace) the XML source of template `name`. Engines that
     /// already compiled it keep their cached version.
     pub fn add_template(&self, name: &str, source: &str) {
-        self.inner
-            .templates
-            .write()
-            .unwrap()
-            .insert(name.to_owned(), Arc::from(source));
+        write(&self.inner.templates).insert(name.to_owned(), Arc::from(source));
     }
 
     /// Warnings emitted so far (unknown directives, ...).
     pub fn warnings(&self) -> Vec<String> {
-        self.inner.warnings.lock().unwrap().clone()
+        lock(&self.inner.warnings).clone()
     }
 
     /// Return and clear the warnings emitted so far.
     pub fn take_warnings(&self) -> Vec<String> {
-        std::mem::take(&mut *self.inner.warnings.lock().unwrap())
+        std::mem::take(&mut *lock(&self.inner.warnings))
     }
 
     /// Convenience: build an engine and render `template` (`render()` semantics:
     /// `true`/`false` are added to the values). Nothing is cached between
     /// calls: to render several times, keep an [`Engine`].
+    ///
+    /// # Errors
+    ///
+    /// The template is unknown, or compiling or rendering it failed (see
+    /// [`Engine::render`]).
     pub fn render<'a, I: IntoIterator<Item = (&'a str, Value)>>(
         &self,
         template: &str,
@@ -185,15 +213,7 @@ fn pairs_of(v: &Value) -> Result<Option<Vec<(Value, Value)>>> {
             let first = items
                 .first()
                 .ok_or_else(|| Error::other("IndexError: list index out of range"))?;
-            if !matches!(first, Value::List(_) | Value::Tuple(_)) {
-                if items.len() != 2 {
-                    return Err(Error::value(format!(
-                        "dictionary update sequence element #0 has length {}; 2 is required",
-                        items.len()
-                    )));
-                }
-                Some(vec![(items[0].clone(), items[1].clone())])
-            } else {
+            if matches!(first, Value::List(_) | Value::Tuple(_)) {
                 let mut out = Vec::new();
                 for (i, item) in items.iter().enumerate() {
                     let kv = item.iter_items()?;
@@ -206,6 +226,14 @@ fn pairs_of(v: &Value) -> Result<Option<Vec<(Value, Value)>>> {
                     out.push((kv[0].clone(), kv[1].clone()));
                 }
                 Some(out)
+            } else {
+                if items.len() != 2 {
+                    return Err(Error::value(format!(
+                        "dictionary update sequence element #0 has length {}; 2 is required",
+                        items.len()
+                    )));
+                }
+                Some(vec![(items[0].clone(), items[1].clone())])
             }
         }
         _ => None,
@@ -489,7 +517,10 @@ impl Host for ValueHost {
             )));
         }
         let mut it = items.into_iter();
-        Ok((it.next().unwrap(), it.next().unwrap()))
+        match (it.next(), it.next()) {
+            (Some(k), Some(v)) => Ok((k, v)),
+            _ => unreachable!("two items, checked above"),
+        }
     }
     fn pairs(&self, v: &Value) -> Result<Option<Vec<(Value, Value)>>> {
         pairs_of(v)
@@ -544,7 +575,7 @@ impl Host for ValueHost {
     }
     fn load(&self, template: &TemplateRef, _ctx: &Context) -> Result<Loaded<Self>> {
         let name = template.to_string();
-        let source = match self.inner.templates.read().unwrap().get(&name) {
+        let source = match read(&self.inner.templates).get(&name) {
             Some(s) => s.clone(),
             None => match &self.inner.loader {
                 Some(l) => Arc::from(l(template)?),
@@ -561,11 +592,12 @@ impl Host for ValueHost {
         Value::Dict(Arc::new(IndexMap::new()))
     }
     fn warn(&self, msg: &str) {
-        self.inner.warnings.lock().unwrap().push(msg.to_owned());
+        lock(&self.inner.warnings).push(msg.to_owned());
     }
 }
 
 /// Items of a `t-foreach` loop over a [`Value`].
+#[derive(Debug)]
 pub enum LoopIter {
     /// `t-foreach` over an int: `range(n)`, produced lazily.
     Range(std::ops::Range<i64>),

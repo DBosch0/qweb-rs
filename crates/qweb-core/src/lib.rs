@@ -1,6 +1,6 @@
 //! # qweb-core
 //!
-//! A fast, host-agnostic implementation of Odoo's QWeb templating engine with
+//! A fast, host-agnostic implementation of Odoo's `QWeb` templating engine with
 //! output byte-identical to the Python implementation (`ir.qweb`).
 //!
 //! ## Architecture
@@ -29,7 +29,7 @@
 //! The engine never inspects values: everything value-related (attribute
 //! access, operators, `str()`, truthiness, scopes, template loading) goes
 //! through the [`Host`] trait, and the interpreter is monomorphised over it.
-//! The Python binding (`qweb-python`) implements it on top of the CPython
+//! The Python binding (`qweb-python`) implements it on top of the `CPython`
 //! object protocol, which gives exact Python semantics; `qweb-value` provides
 //! a pure-Rust host used for tests, benchmarks and WASM.
 //!

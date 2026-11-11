@@ -17,6 +17,7 @@ qweb-core = { path = "crates/qweb-core", version = "0.1.2" }
 qweb-value = { path = "crates/qweb-value", version = "0.1.2" }
 qweb-inherit = { path = "crates/qweb-inherit", version = "0.1.2" }
 memchr = "2.8"
+derive-where = "1.7"
 
 [profile.release]
 lto = "fat"
@@ -34,3 +35,40 @@ panic = "abort"
 # Keep the target_features section: wasm-bindgen reads it to pick the calling
 # convention of its glue. scripts/build_wasm.sh drops the name section instead.
 strip = "debuginfo"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+missing_copy_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+dbg_macro = "warn"
+
+# Pedantic lints disabled for noise reasons
+must_use_candidate = "allow"
+# The parser, compiler and interpreter cast between sizes on purpose (byte
+# offsets, Python ints, node ids); each cast is bounded by construction.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+# The compiler mirrors Odoo's Python compiler function by function; long
+# functions and flag structs follow that structure.
+too_many_lines = "allow"
+struct_excessive_bools = "allow"
+fn_params_excessive_bools = "allow"
+# Short names (a, b, x, y, i, j) are clearer in small numeric/XPath code.
+many_single_char_names = "allow"
+similar_names = "allow"

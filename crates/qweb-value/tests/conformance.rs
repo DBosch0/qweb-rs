@@ -1,5 +1,5 @@
 //! Runs the conformance cases (expected output from the reference Python
-//! engine, see tests/conformance/gen_expected.py) through the pure-Rust host.
+//! engine, see `tests/conformance/gen_expected.py`) through the pure-Rust host.
 
 use qweb_core::{Engine, ErrorKind};
 use qweb_value::{Context, ValueHost, from_json};
@@ -89,12 +89,11 @@ fn conformance() {
             }
         }
     }
-    if !failures.is_empty() {
-        panic!(
-            "{} / {ran} cases failed:\n\n{}",
-            failures.len(),
-            failures.join("\n\n")
-        );
-    }
+    assert!(
+        failures.is_empty(),
+        "{} / {ran} cases failed:\n\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
     eprintln!("{ran} conformance cases passed");
 }

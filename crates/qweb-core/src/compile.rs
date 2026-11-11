@@ -16,7 +16,10 @@ use crate::error::{Error, ErrorKind, Result};
 use crate::expr::{self, Expr, ParseError};
 use crate::format::{FormatPart as FP, split_format};
 use crate::host::{CompileHooks, CompileOptions, Host, TemplateRef};
-use crate::ir::*;
+use crate::ir::{
+    Assets, AttrSrc, Call, CallArg, CallTarget, Convert, Ex, Foreach, Format, FormatPart, Loc,
+    LocSource, Otherwise, Out, OutContent, Program, Stmt,
+};
 use crate::text;
 use crate::xml::{self, Document, NodeId, NodeKind, NsMap, XStr};
 
@@ -301,6 +304,10 @@ pub struct Compiler<'a, H: Host> {
 
 /// Compiler interface given to custom directive handlers
 /// ([`Host::compile_directive`]) and directive checks ([`Host::check_directive`]).
+///
+/// Errors returned by its methods are compilation errors, as described for
+/// [`Compiler::compile`]: the handler should return them.
+#[allow(clippy::missing_errors_doc, reason = "the errors are described above")]
 pub trait CompileApi<H: Host> {
     /// Element being compiled.
     fn node(&self) -> NodeId;
@@ -427,6 +434,17 @@ fn compile_bool(attr: Option<XStr>, default: bool) -> bool {
     default
 }
 
+// The compiler state (tree, buffers, compiled blocks) is too large to print.
+impl<H: Host> std::fmt::Debug for Compiler<'_, H> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Compiler")
+            .field("name", &self.name)
+            .field("reference", &self.reference)
+            .field("opts", &self.opts)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a, H: Host> Compiler<'a, H> {
     /// Compile the template whose root element is the document root.
     ///
@@ -437,6 +455,15 @@ impl<'a, H: Host> Compiler<'a, H> {
     /// `name` is used in error messages, `xmlid` and `viewid` become the
     /// `xmlid` / `viewid` template values (`xmlid` defaults to the root
     /// `t-name`).
+    ///
+    /// # Errors
+    ///
+    /// An invalid template, like Python's compiler: a syntax error in an
+    /// expression or directive ([`ErrorKind::Syntax`]), an invalid directive
+    /// use ([`ErrorKind::Value`], [`ErrorKind::Key`],
+    /// [`ErrorKind::Assertion`]), or an error from a host hook (custom
+    /// directives, expression checks). The error carries the location of
+    /// the element.
     pub fn compile(
         host: &'a H,
         ctx: &'a H::Context,
@@ -692,6 +719,11 @@ impl<'a, H: Host> Compiler<'a, H> {
     /// Compile a Python expression; `raise_on_missing` makes every name
     /// lookup strict. Expressions the native parser does not support are
     /// compiled by the host ([`Host::compile_opaque`]).
+    ///
+    /// # Errors
+    ///
+    /// An invalid expression ([`ErrorKind::Syntax`]), or an error from the
+    /// host's expression check or [`Host::compile_opaque`].
     pub fn compile_expr(&self, src: &str, raise_on_missing: bool) -> Result<Ex<H>> {
         if self.hooks.check_expr {
             self.host.check_expr(self.ctx, src)?;
@@ -936,9 +968,7 @@ impl<'a, H: Host> Compiler<'a, H> {
         let (unqualified, el_tag) = self.el_tag(id);
         // The attributes are consumed (Python clears them after output).
         let attrs = std::mem::take(&mut self.doc.node_mut(id).attrs);
-        let attrib: Vec<(XStr, XStr)> = if !has_ns {
-            attrs
-        } else {
+        let attrib: Vec<(XStr, XStr)> = if has_ns {
             let mut a = self.new_namespaces(id, &cx.nsmap);
             for (k, v) in attrs {
                 let name = self.attr_qname(id, &cx.nsmap, &k);
@@ -949,6 +979,8 @@ impl<'a, H: Host> Compiler<'a, H> {
                 }
             }
             a
+        } else {
+            attrs
         };
         let attrib = if self.hooks.post_processing {
             let tag = self.doc.node(id).tag.clone();
@@ -974,7 +1006,7 @@ impl<'a, H: Host> Compiler<'a, H> {
             let mut merged: Vec<(Option<String>, String)> = (*cx.nsmap).clone();
             for (p, u) in self.doc.node(id).nsmap.iter() {
                 if let Some(slot) = merged.iter_mut().find(|(q, _)| q == p) {
-                    slot.1 = u.clone();
+                    slot.1.clone_from(u);
                 } else {
                     merged.push((p.clone(), u.clone()));
                 }
@@ -982,7 +1014,7 @@ impl<'a, H: Host> Compiler<'a, H> {
             cx.nsmap = Arc::new(merged);
             let body = self
                 .check(id, cx, Directive::InnerContent)
-                .and_then(|_| self.directive_inner_content(id, cx));
+                .and_then(|()| self.directive_inner_content(id, cx));
             cx.nsmap = original;
             body?
         } else {
@@ -1113,6 +1145,10 @@ impl<'a, H: Host> Compiler<'a, H> {
 
     // ----- directives --------------------------------------------------------
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "same signature as the other directives"
+    )]
     fn directive_debug(&mut self, id: NodeId) -> Result<Code<H>> {
         self.doc.node_mut(id).pop("t-debug");
         if !self.opts.dev_mode {
@@ -1208,6 +1244,10 @@ impl<'a, H: Host> Compiler<'a, H> {
         Ok(code)
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "same signature as the other directives"
+    )]
     fn directive_tag_open(&mut self, id: NodeId, cx: &mut Cx) -> Result<Code<H>> {
         let Some(el_tag) = self.doc.node_mut(id).pop("t-tag-open") else {
             return Ok(Vec::new());
@@ -1230,6 +1270,10 @@ impl<'a, H: Host> Compiler<'a, H> {
         Ok(code)
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "same signature as the other directives"
+    )]
     fn directive_tag_close(&mut self, id: NodeId) -> Result<Code<H>> {
         if let Some(el_tag) = self.doc.node_mut(id).pop("t-tag-close")
             && !el_tag.is_empty()
@@ -1246,10 +1290,9 @@ impl<'a, H: Host> Compiler<'a, H> {
         let Some(varname) = self.doc.node_mut(id).pop("t-set") else {
             return Ok(code);
         };
-        if varname.is_empty() {
+        let Some(first) = varname.chars().next() else {
             return Err(Error::key("'t-set'"));
-        }
-        let first = varname.chars().next().unwrap();
+        };
         if varname != "0" && first != '{' && !is_varname(&varname) {
             return Err(Error::syntax(
                 "The varname can only contain alphanumeric characters and underscores.",
@@ -1313,17 +1356,17 @@ impl<'a, H: Host> Compiler<'a, H> {
             self.check(id, &mut sub, Directive::InnerContent)?;
             let mut content = self.directive_inner_content(id, &mut sub)?;
             content.extend(self.flush(false));
-            if !content.is_empty() {
+            if content.is_empty() {
+                code.push(Stmt::SetConst {
+                    key,
+                    value: self.host.str(""),
+                });
+            } else {
                 self.blocks.push(content);
                 code.push(Stmt::SetLazy {
                     key,
                     block: self.blocks.len() - 1,
                     loc: self.loc(id),
-                });
-            } else {
-                code.push(Stmt::SetConst {
-                    key,
-                    value: self.host.str(""),
                 });
             }
         }
@@ -1333,14 +1376,14 @@ impl<'a, H: Host> Compiler<'a, H> {
     fn directive_inner_content(&mut self, id: NodeId, cx: &mut Cx) -> Result<Code<H>> {
         self.doc.node_mut(id).pop("t-inner-content");
         let mut local;
-        let cx: &mut Cx = if !self.doc.node(id).nsmap.is_empty() {
+        let cx: &mut Cx = if self.doc.node(id).nsmap.is_empty() {
+            cx
+        } else {
             local = Cx {
                 attrs_created: cx.attrs_created,
                 nsmap: self.doc.node(id).nsmap.clone(),
             };
             &mut local
-        } else {
-            cx
         };
         if let Some(t) = &self.doc.node(id).text {
             self.text.push(t);
@@ -1630,12 +1673,13 @@ impl<'a, H: Host> Compiler<'a, H> {
         default_body.extend(self.flush(false));
 
         let mut code = flush;
-        if is_slot {
+        // No content: a slot (`t-out="0"`), which always renders its tag.
+        let Some(content) = content else {
             code.extend(tag_open);
             code.push(Stmt::Slot { loc: loc.clone() });
             code.extend(tag_close);
             return Ok(code);
-        }
+        };
         self.doc.node_mut(id).pop("t-tag");
         let otherwise = if !default_body.is_empty() || !self.text.is_empty() {
             // (the text buffer is always empty here, flushed above)
@@ -1648,7 +1692,7 @@ impl<'a, H: Host> Compiler<'a, H> {
             Otherwise::Nothing
         };
         code.push(Stmt::Out(Box::new(Out {
-            content: content.unwrap(),
+            content,
             convert,
             tag_open,
             tag_close,
@@ -1726,6 +1770,10 @@ impl<'a, H: Host> Compiler<'a, H> {
 
         let mut args = Vec::new();
         let mut i = 0;
+        #[allow(
+            clippy::case_sensitive_file_extension_comparisons,
+            reason = "attribute name suffixes, not file extensions"
+        )]
         let is_arg = |k: &str| {
             k.ends_with(".f") || k.ends_with(".translate") || !k.starts_with("t-") || k == "t-args"
         };
@@ -1756,7 +1804,7 @@ impl<'a, H: Host> Compiler<'a, H> {
 
         let target = match self.compile_format(&expr)? {
             Format::Const(_) => CallTarget::Static(TemplateRef::parse(&expr)),
-            fmt => CallTarget::Dynamic(fmt),
+            fmt @ Format::Parts(_) => CallTarget::Dynamic(fmt),
         };
         code.push(Stmt::Call(Box::new(Call {
             body,
@@ -1827,7 +1875,7 @@ pub fn py_repr_str(s: &str) -> String {
                 out.push(c);
             }
             c if (c as u32) < 0x20 || c as u32 == 0x7f => {
-                out.push_str(&format!("\\x{:02x}", c as u32))
+                let _ = write!(out, "\\x{:02x}", c as u32);
             }
             c => out.push(c),
         }

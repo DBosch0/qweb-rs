@@ -4,6 +4,7 @@
 //! Nodes live in an arena ([`Dom`]); a tree is referenced by its root id.
 //! Freed subtrees are recycled.
 
+use core::fmt::Write as _;
 use core::hash::Hash;
 
 use qweb_core::xml::{Document, NodeKind, XML_NS, XStr, local_name, namespace};
@@ -166,15 +167,12 @@ impl Dom {
     }
 
     fn alloc_inner(&mut self, node: DomNode) -> DomId {
-        match self.free.pop() {
-            Some(id) => {
-                self.nodes[id] = node;
-                id
-            }
-            None => {
-                self.nodes.push(node);
-                self.nodes.len() - 1
-            }
+        if let Some(id) = self.free.pop() {
+            self.nodes[id] = node;
+            id
+        } else {
+            self.nodes.push(node);
+            self.nodes.len() - 1
         }
     }
 
@@ -253,6 +251,10 @@ impl Dom {
 
     /// Parse an XML string (like `DOMParser.parseFromString(s, "text/xml")`)
     /// and return the document element (marked as a document child).
+    ///
+    /// # Errors
+    ///
+    /// The string is not well-formed XML.
     pub fn parse(&mut self, xml: &str) -> Result<DomId, DomError> {
         let doc = Document::parse(xml).map_err(|e| DomError(format!("XML parsing error: {e}")))?;
         let root = self.import_lxml(&doc, doc.root, None);
@@ -458,15 +460,21 @@ impl Dom {
     }
 
     /// `target.before(...nodes)`.
+    ///
+    /// # Errors
+    ///
+    /// `HierarchyRequestError`, as in the browser, when the result would not
+    /// be a valid tree (a node inserted into itself or its descendants, or an
+    /// element or text placed next to a document element).
     pub fn before(&mut self, target: DomId, nodes: &[DomId]) -> Result<(), DomError> {
-        let Some(parent) = self.nodes[target].parent else {
+        let (Some(parent), Some(i)) = (self.nodes[target].parent, self.index_in_parent(target))
+        else {
             return if self.nodes[target].doc_child {
                 self.doc_level(nodes)
             } else {
                 Ok(())
             };
         };
-        let i = self.index_in_parent(target).unwrap();
         let viable_prev = self.nodes[parent].children[..i]
             .iter()
             .rev()
@@ -488,15 +496,21 @@ impl Dom {
     }
 
     /// `target.after(...nodes)`.
+    ///
+    /// # Errors
+    ///
+    /// `HierarchyRequestError`, as in the browser, when the result would not
+    /// be a valid tree (a node inserted into itself or its descendants, or an
+    /// element or text placed next to a document element).
     pub fn after(&mut self, target: DomId, nodes: &[DomId]) -> Result<(), DomError> {
-        let Some(parent) = self.nodes[target].parent else {
+        let (Some(parent), Some(i)) = (self.nodes[target].parent, self.index_in_parent(target))
+        else {
             return if self.nodes[target].doc_child {
                 self.doc_level(nodes)
             } else {
                 Ok(())
             };
         };
-        let i = self.index_in_parent(target).unwrap();
         let viable_next = self.nodes[parent].children[i + 1..]
             .iter()
             .copied()
@@ -505,15 +519,21 @@ impl Dom {
     }
 
     /// `target.replaceWith(...nodes)`.
+    ///
+    /// # Errors
+    ///
+    /// `HierarchyRequestError`, as in the browser, when the result would not
+    /// be a valid tree (a node inserted into itself or its descendants, or an
+    /// element or text placed next to a document element).
     pub fn replace_with(&mut self, target: DomId, nodes: &[DomId]) -> Result<(), DomError> {
-        let Some(parent) = self.nodes[target].parent else {
+        let (Some(parent), Some(i)) = (self.nodes[target].parent, self.index_in_parent(target))
+        else {
             if self.nodes[target].doc_child {
                 self.doc_level(nodes)?;
                 self.detach(target);
             }
             return Ok(());
         };
-        let i = self.index_in_parent(target).unwrap();
         let viable_next = self.nodes[parent].children[i + 1..]
             .iter()
             .copied()
@@ -526,22 +546,32 @@ impl Dom {
         for &n in nodes {
             self.detach(n);
         }
-        if self.nodes[target].parent == Some(parent) {
-            let idx = self.index_in_parent(target).unwrap();
-            self.detach(target);
-            let reference = self.nodes[parent].children.get(idx).copied();
-            self.insert_nodes(parent, nodes, reference)
-        } else {
-            self.insert_nodes(parent, nodes, viable_next)
+        match self.index_in_parent(target) {
+            Some(idx) if self.nodes[target].parent == Some(parent) => {
+                self.detach(target);
+                let reference = self.nodes[parent].children.get(idx).copied();
+                self.insert_nodes(parent, nodes, reference)
+            }
+            _ => self.insert_nodes(parent, nodes, viable_next),
         }
     }
 
     /// `parent.append(...nodes)`.
+    ///
+    /// # Errors
+    ///
+    /// `HierarchyRequestError`, as in the browser, when a node would be
+    /// inserted into itself or its descendants.
     pub fn append(&mut self, parent: DomId, nodes: &[DomId]) -> Result<(), DomError> {
         self.insert_nodes(parent, nodes, None)
     }
 
     /// `parent.prepend(...nodes)`.
+    ///
+    /// # Errors
+    ///
+    /// `HierarchyRequestError`, as in the browser, when a node would be
+    /// inserted into itself or its descendants.
     pub fn prepend(&mut self, parent: DomId, nodes: &[DomId]) -> Result<(), DomError> {
         let first = self.nodes[parent]
             .children
@@ -712,7 +742,7 @@ pub fn json_str(s: &str, out: &mut String) {
             0x0c => "\\f",
             0..0x20 => {
                 out.push_str(&s[start..i]);
-                out.push_str(&format!("\\u{b:04x}"));
+                let _ = write!(out, "\\u{b:04x}");
                 start = i + 1;
                 continue;
             }
@@ -726,9 +756,9 @@ pub fn json_str(s: &str, out: &mut String) {
     out.push('"');
 }
 
-/// XPath view of a [`Dom`] tree.
+/// `XPath` view of a [`Dom`] tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-/// A node of the XPath data model over a [`Dom`].
+/// A node of the `XPath` data model over a [`Dom`].
 pub enum DNode {
     /// Document node above a top-level node.
     Doc(DomId),
@@ -769,7 +799,7 @@ impl Tree for Dom {
         match n {
             DNode::Doc(top) => out.push(DNode::Node(top)),
             DNode::Node(id) if self.nodes[id].kind == DomKind::Element => {
-                out.extend(self.nodes[id].children.iter().map(|&c| DNode::Node(c)))
+                out.extend(self.nodes[id].children.iter().map(|&c| DNode::Node(c)));
             }
             _ => {}
         }

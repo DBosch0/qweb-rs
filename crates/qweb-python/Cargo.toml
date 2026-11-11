@@ -22,3 +22,6 @@ qweb-inherit.workspace = true
 # `extension-module` is enabled by maturin (pyproject.toml), not here: forcing it
 # breaks linking of `cargo test` binaries on macOS.
 pyo3 = { version = "0.30", features = ["abi3-py312", "py-clone"] }
+
+[lints]
+workspace = true

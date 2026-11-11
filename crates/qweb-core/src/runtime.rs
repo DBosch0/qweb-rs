@@ -1,14 +1,19 @@
 //! Interpreter for compiled templates, lazy content and the template cache.
 
+use derive_where::derive_where;
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::fmt;
+use std::sync::{Arc, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::compile::{Compiler, is_void};
 use crate::error::{Error, ErrorKind, Result};
 use crate::escape::escape_into;
 use crate::expr::CmpOp;
 use crate::host::{CompileOptions, Host, Loaded, TemplateRef};
-use crate::ir::*;
+use crate::ir::{
+    Assets, AttrSrc, Call, CallArg, CallTarget, Ex, Foreach, Format, FormatPart, Loc, Otherwise,
+    Out, OutContent, Program, Stmt,
+};
 use crate::xml::Document;
 
 /// Maximum number of nested template frames.
@@ -34,6 +39,16 @@ struct SourceKey {
 /// A compiled-template cache.
 type Cache<K, H> = RwLock<HashMap<K, Arc<Program<H>>>>;
 
+// A cache stays valid when a thread panicked while holding its lock (it only
+// maps keys to finished programs), so a poisoned lock is used as is.
+fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn write<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Template engine: owns the host and the compiled-template caches.
 ///
 /// Both caches are bounded: when one holds `max_entries` programs it is
@@ -48,6 +63,19 @@ pub struct Engine<H: Host> {
     /// The cache must then be invalidated when templates change.
     trust_names: bool,
     max_entries: usize,
+}
+
+// The caches hold whole programs: show their sizes only.
+impl<H: Host + fmt::Debug> fmt::Debug for Engine<H> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Engine")
+            .field("host", &self.host)
+            .field("by_name", &read(&self.by_name).len())
+            .field("by_source", &read(&self.by_source).len())
+            .field("trust_names", &self.trust_names)
+            .field("max_entries", &self.max_entries)
+            .finish()
+    }
 }
 
 impl<H: Host> Engine<H> {
@@ -76,11 +104,19 @@ impl<H: Host> Engine<H> {
 
     /// Drop all compiled templates.
     pub fn invalidate(&self) {
-        self.by_name.write().unwrap().clear();
-        self.by_source.write().unwrap().clear();
+        write(&self.by_name).clear();
+        write(&self.by_source).clear();
     }
 
     /// Render a template by reference with the given values and context.
+    ///
+    /// # Errors
+    ///
+    /// Any compilation error (see [`Compiler::compile`]), an error raised
+    /// while rendering (a failed name lookup, an expression or host error,
+    /// t-call nesting deeper than 50: [`ErrorKind::Recursion`]), or an error
+    /// from [`Host::load`] for the template or a template it calls. The error
+    /// carries the location of the element and the t-call frames.
     pub fn render(
         self: &Arc<Self>,
         template: &TemplateRef,
@@ -92,6 +128,14 @@ impl<H: Host> Engine<H> {
     }
 
     /// Render a template given its XML source (like rendering an etree).
+    ///
+    /// # Errors
+    ///
+    /// An XML syntax error ([`ErrorKind::Xml`]), any compilation error (see [`Compiler::compile`]), an error raised
+    /// while rendering (a failed name lookup, an expression or host error,
+    /// t-call nesting deeper than 50: [`ErrorKind::Recursion`]), or an error
+    /// from [`Host::load`] for the template or a template it calls. The error
+    /// carries the location of the element and the t-call frames.
     pub fn render_source(
         self: &Arc<Self>,
         source: &str,
@@ -103,6 +147,10 @@ impl<H: Host> Engine<H> {
     }
 
     /// Render a compiled program.
+    ///
+    /// # Errors
+    ///
+    /// An error raised while rendering, as for [`Engine::render`].
     pub fn render_program(
         self: &Arc<Self>,
         program: &Arc<Program<H>>,
@@ -128,6 +176,11 @@ impl<H: Host> Engine<H> {
 
     /// Compile a template source in the given context (no caching): hosts
     /// with their own template cache return the result from [`Host::load`].
+    ///
+    /// # Errors
+    ///
+    /// An XML syntax error ([`ErrorKind::Xml`]) or a compilation error (see
+    /// [`Compiler::compile`]).
     pub fn compile_program(
         &self,
         source: &str,
@@ -183,7 +236,7 @@ impl<H: Host> Engine<H> {
             xmlid,
             viewid: viewid_repr,
         };
-        if let Some(p) = self.by_source.read().unwrap().get(&key) {
+        if let Some(p) = read(&self.by_source).get(&key) {
             return Ok(p.clone());
         }
         let program = Arc::new(self.compile_source(
@@ -193,7 +246,7 @@ impl<H: Host> Engine<H> {
             viewid,
             name,
         )?);
-        let mut cache = self.by_source.write().unwrap();
+        let mut cache = write(&self.by_source);
         if cache.len() >= self.max_entries {
             cache.clear();
         }
@@ -202,14 +255,15 @@ impl<H: Host> Engine<H> {
     }
 
     /// Get (load and compile if needed) the program for a template reference.
+    ///
+    /// # Errors
+    ///
+    /// An error from [`Host::load`], an XML syntax error
+    /// ([`ErrorKind::Xml`]) or a compilation error (see [`Compiler::compile`]).
     pub fn program(&self, template: &TemplateRef, ctx: &H::Context) -> Result<Arc<Program<H>>> {
         let opts = self.host.compile_options(ctx);
         if self.trust_names
-            && let Some(p) = self
-                .by_name
-                .read()
-                .unwrap()
-                .get(&(template.clone(), opts.clone()))
+            && let Some(p) = read(&self.by_name).get(&(template.clone(), opts.clone()))
         {
             return Ok(p.clone());
         }
@@ -222,7 +276,7 @@ impl<H: Host> Engine<H> {
             } => self.compile_cached(source, ctx, xmlid, viewid, &template.to_string())?,
         };
         if self.trust_names {
-            let mut cache = self.by_name.write().unwrap();
+            let mut cache = write(&self.by_name);
             if cache.len() >= self.max_entries {
                 cache.clear();
             }
@@ -252,8 +306,24 @@ pub struct Lazy<H: Host> {
     html: OnceLock<String>,
 }
 
+// The scope and context are host types without `Debug`.
+impl<H: Host> fmt::Debug for Lazy<H> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Lazy")
+            .field("block", &self.block)
+            .field("loc", &self.loc)
+            .field("html", &self.html.get())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<H: Host> Lazy<H> {
     /// Render (once) and return the markup (`str(QwebContent)`).
+    ///
+    /// # Errors
+    ///
+    /// An error raised while rendering the content, as for
+    /// [`Engine::render`]. A failed rendering is not cached.
     pub fn render(&self) -> Result<&str> {
         if let Some(h) = self.html.get() {
             return Ok(h);
@@ -288,6 +358,7 @@ impl<H: Host> Lazy<H> {
 // ---------------------------------------------------------------------------
 
 /// Value of a dynamic attribute, as given to [`Host::post_processing_att`].
+#[derive_where(Debug; H::Value, H::Key, H::Opaque, H::Hook)]
 pub enum AttrVal<H: Host> {
     /// Static attribute value.
     Static(Arc<str>),
@@ -437,7 +508,7 @@ fn locate<H: Host>(err: Error, prog: &Program<H>, loc: &Loc) -> Error {
     }
 }
 
-impl<'e, H: Host> Renderer<'e, H> {
+impl<H: Host> Renderer<'_, H> {
     /// An empty attribute map, reusing a recycled list when there is one.
     fn new_attrs(&mut self) -> AttrMap<H> {
         let items = self.attr_pool.iter_mut().find_map(Option::take);
@@ -618,14 +689,13 @@ impl<'e, H: Host> Renderer<'e, H> {
                     markup,
                     loc,
                 } => {
-                    let v = match (fmt, markup) {
-                        (Format::Const(v), false) => v.clone(),
-                        _ => {
-                            let s = self
-                                .format_string(fmt, &frame.scope)
-                                .map_err(|e| locate(e, prog, loc))?;
-                            if *markup { h.markup(&s) } else { h.str(&s) }
-                        }
+                    let v = if let (Format::Const(v), false) = (fmt, markup) {
+                        v.clone()
+                    } else {
+                        let s = self
+                            .format_string(fmt, &frame.scope)
+                            .map_err(|e| locate(e, prog, loc))?;
+                        if *markup { h.markup(&s) } else { h.str(&s) }
                     };
                     h.scope_set(&mut frame.scope, key, v);
                 }
@@ -677,10 +747,10 @@ impl<'e, H: Host> Renderer<'e, H> {
                                 .map_err(|e| locate(e, prog, loc))?,
                         ),
                     };
-                    if frame.attrs.is_none() {
-                        frame.attrs = Some(self.new_attrs());
-                    }
-                    frame.attrs.as_mut().unwrap().set(name.clone(), v);
+                    frame
+                        .attrs
+                        .get_or_insert_with(|| self.new_attrs())
+                        .set(name.clone(), v);
                 }
                 Stmt::AttrUpdate { value, loc } => {
                     let v = self
@@ -692,7 +762,9 @@ impl<'e, H: Host> Renderer<'e, H> {
                         }
                         for (k, val) in pairs {
                             let name = self.attr_name(&k)?;
-                            frame.attrs.as_mut().unwrap().set(name, AttrVal::Value(val));
+                            if let Some(attrs) = &mut frame.attrs {
+                                attrs.set(name, AttrVal::Value(val));
+                            }
                         }
                     }
                 }
@@ -840,17 +912,14 @@ impl<'e, H: Host> Renderer<'e, H> {
                 let name = self.attr_name(&k)?;
                 new_attrs.set(name, AttrVal::Value(v));
             }
-            match (&mut frame.attrs, conv.merge) {
-                (Some(existing), true) => {
-                    for (k, v) in new_attrs.items.drain(..) {
-                        existing.set(k, v);
-                    }
-                    self.recycle_attrs(Some(new_attrs));
+            if let (Some(existing), true) = (&mut frame.attrs, conv.merge) {
+                for (k, v) in new_attrs.items.drain(..) {
+                    existing.set(k, v);
                 }
-                _ => {
-                    let old = frame.attrs.replace(new_attrs);
-                    self.recycle_attrs(old);
-                }
+                self.recycle_attrs(Some(new_attrs));
+            } else {
+                let old = frame.attrs.replace(new_attrs);
+                self.recycle_attrs(old);
             }
             content = r.content;
             force_display = r.force_display;
@@ -858,16 +927,7 @@ impl<'e, H: Host> Renderer<'e, H> {
                 content = h.text_value(&content)?;
             }
         }
-        if !h.is_none_or_false(&content) {
-            self.run(prog, &o.tag_open, frame, out)?;
-            if let Some(lazy) = h.as_lazy(&content) {
-                self.render_lazy(&lazy, out)
-                    .map_err(|e| e.with_frame(err_frame(prog, &o.loc)))?;
-            } else {
-                h.write_escaped(&content, out)?;
-            }
-            self.run(prog, &o.tag_close, frame, out)?;
-        } else {
+        if h.is_none_or_false(&content) {
             match &o.otherwise {
                 Otherwise::Default(body) => {
                     self.run(prog, &o.tag_open, frame, out)?;
@@ -885,6 +945,15 @@ impl<'e, H: Host> Renderer<'e, H> {
                 }
                 Otherwise::Nothing => {}
             }
+        } else {
+            self.run(prog, &o.tag_open, frame, out)?;
+            if let Some(lazy) = h.as_lazy(&content) {
+                self.render_lazy(&lazy, out)
+                    .map_err(|e| e.with_frame(err_frame(prog, &o.loc)))?;
+            } else {
+                h.write_escaped(&content, out)?;
+            }
+            self.run(prog, &o.tag_close, frame, out)?;
         }
         Ok(())
     }
@@ -1034,7 +1103,7 @@ impl<'e, H: Host> Renderer<'e, H> {
     fn format_value(&self, f: &Format<H>, scope: &H::Scope) -> Result<H::Value> {
         match f {
             Format::Const(v) => Ok(v.clone()),
-            _ => Ok(self.h.str(&self.format_string(f, scope)?)),
+            Format::Parts(_) => Ok(self.h.str(&self.format_string(f, scope)?)),
         }
     }
 

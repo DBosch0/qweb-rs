@@ -67,7 +67,10 @@ impl Builtin {
     /// The builtin called `name` in a template (`unicode` and `xrange` are
     /// aliases of `str` and `range`).
     pub fn from_name(name: &str) -> Option<Builtin> {
-        use Builtin::*;
+        use Builtin::{
+            Abs, All, Any, Bool, Chr, Dict, Divmod, Enumerate, Float, Int, Len, List, Max, Min,
+            Ord, Range, Repr, Round, Set, Sorted, Str, Sum, Tuple, Zip,
+        };
         Some(match name {
             "len" => Len,
             "str" | "unicode" => Str,
@@ -99,7 +102,10 @@ impl Builtin {
 
     /// Python name of the builtin.
     pub fn name(self) -> &'static str {
-        use Builtin::*;
+        use Builtin::{
+            Abs, All, Any, Bool, Chr, Dict, Divmod, Enumerate, Float, Int, Len, List, Max, Min,
+            Ord, Range, Repr, Round, Set, Sorted, Str, Sum, Tuple, Zip,
+        };
         match self {
             Len => "len",
             Str => "str",
@@ -251,8 +257,9 @@ fn write_float(f: f64, out: &mut String) {
     // Both are formatted on the stack (at most 17 digits plus the exponent).
     let mut e = StackStr::<32>::new();
     let _ = write!(e, "{:e}", f.abs());
-    let (mant, exp) = e.as_str().split_once('e').unwrap();
-    let exp: i32 = exp.parse().unwrap();
+    // `{:e}` always writes `<digits>e<exponent>`.
+    let (mant, exp) = e.as_str().split_once('e').unwrap_or((e.as_str(), "0"));
+    let exp: i32 = exp.parse().unwrap_or(0);
     let mut digits = StackStr::<32>::new();
     for part in mant.split('.') {
         let _ = digits.write_str(part);
@@ -324,6 +331,10 @@ impl Value {
 
     /// `dict(pairs)`: a later duplicate key replaces the value but keeps the
     /// first key and its position.
+    ///
+    /// # Errors
+    ///
+    /// A key is unhashable (`TypeError`).
     pub fn dict_from(pairs: Vec<(Value, Value)>) -> Result<Value> {
         let mut m = IndexMap::with_capacity(pairs.len());
         for (k, v) in pairs {
@@ -347,18 +358,21 @@ impl Value {
             Value::Dict(_) => "dict",
             Value::Set(_) => "set",
             Value::Object(_) => "object",
-            Value::Builtin(_) => "builtin_function_or_method",
-            Value::Method(_) => "builtin_function_or_method",
+            Value::Builtin(_) | Value::Method(_) => "builtin_function_or_method",
             Value::Slice(_) => "slice",
             Value::Lazy(_) => "QwebContent",
         }
     }
 
-    /// Hash key of the value (`TypeError` if unhashable).
+    /// Hash key of the value.
+    ///
+    /// # Errors
+    ///
+    /// The value is unhashable (`TypeError`).
     pub fn hkey(&self) -> Result<HKey> {
         Ok(match self {
             Value::None => HKey::None,
-            Value::Bool(b) => HKey::Int(*b as i64),
+            Value::Bool(b) => HKey::Int(i64::from(*b)),
             Value::Int(i) => HKey::Int(*i),
             Value::Float(f) => {
                 if f.fract() == 0.0 && f.abs() < 9.2e18 {
@@ -382,6 +396,10 @@ impl Value {
     }
 
     /// `bool(self)`.
+    ///
+    /// # Errors
+    ///
+    /// Rendering a lazy value (`QwebContent`) failed.
     pub fn truthy(&self) -> Result<bool> {
         Ok(match self {
             Value::None => false,
@@ -398,6 +416,10 @@ impl Value {
     }
 
     /// `str(self)` appended to `out`.
+    ///
+    /// # Errors
+    ///
+    /// Rendering a lazy value (`QwebContent`) failed.
     pub fn write_str(&self, out: &mut String) -> Result<()> {
         match self {
             Value::Str(s) | Value::Markup(s) => out.push_str(s),
@@ -408,6 +430,10 @@ impl Value {
     }
 
     /// `str(self)`.
+    ///
+    /// # Errors
+    ///
+    /// Rendering a lazy value (`QwebContent`) failed.
     pub fn to_str(&self) -> Result<String> {
         let mut s = String::new();
         self.write_str(&mut s)?;
@@ -530,7 +556,7 @@ impl Value {
     /// The value as a float, for numbers (bool, int, float).
     pub fn as_f64(&self) -> Option<f64> {
         match self {
-            Value::Bool(b) => Some(*b as i64 as f64),
+            Value::Bool(b) => Some(i64::from(*b) as f64),
             Value::Int(i) => Some(*i as f64),
             Value::Float(f) => Some(*f),
             _ => None,
@@ -540,13 +566,18 @@ impl Value {
     /// The value as an int, for bool and int.
     pub fn as_i64(&self) -> Option<i64> {
         match self {
-            Value::Bool(b) => Some(*b as i64),
+            Value::Bool(b) => Some(i64::from(*b)),
             Value::Int(i) => Some(*i),
             _ => None,
         }
     }
 
     /// Items of an iterable.
+    ///
+    /// # Errors
+    ///
+    /// The value is not iterable (`TypeError`), or rendering a lazy value
+    /// failed.
     pub fn iter_items(&self) -> Result<Vec<Value>> {
         Ok(match self {
             Value::List(v) | Value::Tuple(v) | Value::Set(v) => (**v).clone(),
@@ -555,7 +586,7 @@ impl Value {
                 .chars()
                 .map(|c| Value::str(c.encode_utf8(&mut [0; 4])))
                 .collect(),
-            Value::Bytes(b) => b.iter().map(|&c| Value::Int(c as i64)).collect(),
+            Value::Bytes(b) => b.iter().map(|&c| Value::Int(i64::from(c))).collect(),
             Value::Object(o) => o.keys().map(|k| Value::Str(k.clone())).collect(),
             other => {
                 return Err(Error::type_error(format!(
@@ -567,6 +598,11 @@ impl Value {
     }
 
     /// `len(self)`.
+    ///
+    /// # Errors
+    ///
+    /// The value has no length (`TypeError`), or rendering a lazy value
+    /// failed.
     pub fn py_len(&self) -> Result<usize> {
         Ok(match self {
             Value::List(v) | Value::Tuple(v) | Value::Set(v) => v.len(),
@@ -613,18 +649,23 @@ impl Value {
         }
     }
 
-    /// Ordering of `self` and `other` (`TypeError` if they are not
-    /// comparable, `ValueError` for NaN: use [`crate::ops::compare`] for the
-    /// comparison operators).
+    /// Ordering of `self` and `other`. Use [`crate::ops::compare`] for the
+    /// comparison operators.
+    ///
+    /// # Errors
+    ///
+    /// The values are not comparable (`TypeError`), or one is NaN
+    /// (`ValueError`).
     pub fn py_cmp(&self, other: &Value) -> Result<Ordering> {
         match (self, other) {
             (a, b) if a.as_f64().is_some() && b.as_f64().is_some() => {
                 match (a.as_i64(), b.as_i64()) {
                     (Some(x), Some(y)) => Ok(x.cmp(&y)),
+                    // (both are numbers: checked above)
                     _ => a
                         .as_f64()
-                        .unwrap()
-                        .partial_cmp(&b.as_f64().unwrap())
+                        .unwrap_or_default()
+                        .partial_cmp(&b.as_f64().unwrap_or_default())
                         .ok_or_else(|| Error::value("nan")),
                 }
             }
@@ -648,6 +689,10 @@ impl Value {
 }
 
 /// `markupsafe.escape` returning a Markup string.
+///
+/// # Errors
+///
+/// Rendering a lazy value (`QwebContent`) failed.
 pub fn escape_value(v: &Value) -> Result<Arc<str>> {
     match v {
         Value::Markup(s) => Ok(s.clone()),

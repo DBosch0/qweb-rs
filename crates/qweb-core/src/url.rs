@@ -98,11 +98,11 @@ fn strip_prefix_ci<'a>(s: &'a str, pat: &str) -> Option<&'a str> {
 /// assert!(!is_malicious_href("/web#action=1"));
 /// ```
 pub fn is_malicious_href(href: &str) -> bool {
+    const JAVASCRIPT: &str = "javascript:";
     // Fast path: the scheme needs a ':', which may be percent-encoded.
     if memchr::memchr2(b':', b'%', href.as_bytes()).is_none() {
         return false;
     }
-    const JAVASCRIPT: &str = "javascript:";
     let decoded = decode_href(href);
     let mut rest = decoded.as_str();
     while !rest.is_empty() {

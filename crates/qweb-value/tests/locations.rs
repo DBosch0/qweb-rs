@@ -1,7 +1,9 @@
-//! Error locations (XPath and start tag of the element). Most are built from
+//! Error locations (`XPath` and start tag of the element). Most are built from
 //! the template source only when the error is reported; elements modified
 //! before their compilation (root, `t-else`/`t-elif`) are built eagerly.
 //! Expected values are the ones of the eager implementation.
+
+#![allow(clippy::expect_used, reason = "test helpers")]
 
 use qweb_value::{Value, ValueHost};
 

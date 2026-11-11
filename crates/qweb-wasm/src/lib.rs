@@ -6,7 +6,7 @@
 //!   node boundaries survive until the final tree is exported (`toJson`).
 //! * [`apply_inheritance_server`]: the server dialect
 //!   (`template_inheritance.py`) on serialized trees.
-//! * [`Renderer`]: QWeb string rendering with plain JSON values.
+//! * [`Renderer`]: `QWeb` string rendering with plain JSON values.
 //!
 //! Build with `scripts/build_wasm.sh` (wasm-bindgen) or wasm-pack; see
 //! README.md.
@@ -27,13 +27,23 @@ fn js_err(msg: impl Into<String>) -> JsError {
 }
 
 /// Template trees for the browser dialect of template inheritance.
+///
+/// # Errors
+///
+/// Methods taking a tree handle throw a JS `Error` when the handle is not a
+/// live node of the store; the other errors are listed on each method.
 #[wasm_bindgen]
+#[derive(Debug)]
 pub struct TemplateStore {
     dom: Dom,
     js: JsInheritance,
 }
 
 #[wasm_bindgen]
+#[allow(
+    clippy::missing_errors_doc,
+    reason = "invalid handles are described on the type; other errors on each method"
+)]
 impl TemplateStore {
     /// An empty store (`debug`: `odoo.debug`, which adds the `CLASS_CONTAINS`
     /// warnings).
@@ -62,6 +72,10 @@ impl TemplateStore {
     }
 
     /// Parse an XML string; returns the handle of its document element.
+    ///
+    /// # Errors
+    ///
+    /// The string is not well-formed XML.
     pub fn parse(&mut self, xml: &str) -> Result<u32, JsError> {
         self.dom
             .parse(xml)
@@ -85,6 +99,11 @@ impl TemplateStore {
     }
 
     /// `applyInheritance(root, operations, url)`; returns the new root.
+    ///
+    /// # Errors
+    ///
+    /// The errors `applyInheritance` throws (see
+    /// [`JsInheritance::apply`]).
     #[wasm_bindgen(js_name = applyInheritance)]
     pub fn apply_inheritance(
         &mut self,
@@ -129,6 +148,10 @@ impl TemplateStore {
     /// `processed` differs from the tag of `element`, move its children into a
     /// new element named like `element`; then copy the attributes of `element`
     /// (except `t-inherit` and `t-inherit-mode`). Returns the resulting root.
+    ///
+    /// # Errors
+    ///
+    /// A DOM `HierarchyRequestError` when the children cannot be moved.
     #[wasm_bindgen(js_name = finishPrimary)]
     pub fn finish_primary(&mut self, processed: u32, element: u32) -> Result<u32, JsError> {
         let (mut processed, element) = (self.check(processed)?, self.check(element)?);
@@ -190,7 +213,16 @@ impl TemplateStore {
 }
 
 /// Server dialect (`odoo/tools/template_inheritance.py`) on serialized trees.
+///
+/// # Errors
+///
+/// The source or a spec is not well-formed XML, or a spec fails to apply
+/// (see [`qweb_inherit::apply_inheritance_str`]).
 #[wasm_bindgen(js_name = applyInheritanceServer)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "wasm-bindgen passes JS arrays as owned vectors"
+)]
 pub fn apply_inheritance_server(
     source: &str,
     specs: Vec<String>,
@@ -201,8 +233,9 @@ pub fn apply_inheritance_server(
         .map_err(|e| js_err(e.message))
 }
 
-/// QWeb string renderer (server semantics) with JSON values.
+/// `QWeb` string renderer (server semantics) with JSON values.
 #[wasm_bindgen]
+#[derive(Debug)]
 pub struct Renderer {
     host: ValueHost,
     engine: Arc<Engine<ValueHost>>,
@@ -236,6 +269,11 @@ impl Renderer {
     /// Render `name` with `values` and `options` (JSON objects; an empty
     /// string is `{}`). See `qweb_value::from_json` for markup, tuples and
     /// objects.
+    ///
+    /// # Errors
+    ///
+    /// `values_json` or `options_json` is not a JSON object, or rendering
+    /// failed (see [`qweb_core::Engine::render`]).
     pub fn render(
         &self,
         name: &str,
@@ -244,7 +282,7 @@ impl Renderer {
     ) -> Result<String, JsError> {
         let parse = |s: &str| -> Result<serde_json::Map<String, serde_json::Value>, JsError> {
             if s.is_empty() {
-                return Ok(Default::default());
+                return Ok(serde_json::Map::new());
             }
             match serde_json::from_str(s) {
                 Ok(serde_json::Value::Object(m)) => Ok(m),

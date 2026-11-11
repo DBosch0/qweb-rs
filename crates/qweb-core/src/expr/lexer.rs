@@ -1,4 +1,4 @@
-//! Tokenizer for the Python expression dialect used in QWeb templates.
+//! Tokenizer for the Python expression dialect used in `QWeb` templates.
 
 /// A token. Keywords are [`Tok::Name`]s; the parser tells them apart.
 #[derive(Debug, PartialEq)]
@@ -136,7 +136,7 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Tok>, LexError> {
             if len == 0 {
                 return Err(LexError::Syntax(format!(
                     "invalid character {:?}",
-                    rest.chars().next().unwrap()
+                    rest.chars().next().unwrap_or_default()
                 )));
             }
             let name = &rest[..len];
@@ -150,7 +150,7 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Tok>, LexError> {
         let Some(op) = operator(&b[i..]) else {
             return Err(LexError::Syntax(format!(
                 "invalid character {:?}",
-                src[i..].chars().next().unwrap()
+                src[i..].chars().next().unwrap_or_default()
             )));
         };
         toks.push(Tok::Op(op));
@@ -371,14 +371,14 @@ fn unescape_str(body: &str) -> Result<String, LexError> {
             't' => out.push('\t'),
             'v' => out.push('\x0b'),
             '0'..='7' => {
-                let mut v = e.to_digit(8).unwrap();
+                let mut v = u32::from(e) - u32::from('0');
                 for _ in 0..2 {
-                    match chars.peek() {
-                        Some(&(_, d)) if d.is_digit(8) => {
-                            v = v * 8 + d.to_digit(8).unwrap();
+                    match chars.peek().and_then(|&(_, d)| d.to_digit(8)) {
+                        Some(d) => {
+                            v = v * 8 + d;
                             chars.next();
                         }
-                        _ => break,
+                        None => break,
                     }
                 }
                 out.push(char::from_u32(v).ok_or_else(|| LexError::Syntax("bad escape".into()))?);
@@ -442,10 +442,10 @@ fn unescape_bytes(body: &str) -> Result<Vec<u8>, LexError> {
             b't' => out.push(b'\t'),
             b'v' => out.push(11),
             b'0'..=b'7' => {
-                let mut v = (e - b'0') as u32;
+                let mut v = u32::from(e - b'0');
                 let mut n = 0;
                 while n < 2 && i < b.len() && (b'0'..=b'7').contains(&b[i]) {
-                    v = v * 8 + (b[i] - b'0') as u32;
+                    v = v * 8 + u32::from(b[i] - b'0');
                     i += 1;
                     n += 1;
                 }

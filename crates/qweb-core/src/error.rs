@@ -1,7 +1,7 @@
 //! Errors raised while compiling or rendering templates.
 //!
 //! An [`Error`] has a kind ([`Error::kind`]), which hosts map onto their
-//! native exception classes, a short message ([`Error::message`]), and QWeb
+//! native exception classes, a short message ([`Error::message`]), and `QWeb`
 //! location information: the innermost element where it happened
 //! ([`Error::location`]) and the template call stack ([`Error::stack`]).
 
@@ -15,7 +15,7 @@ pub struct Frame {
     pub template: Arc<str>,
     /// Template reference (id), as text.
     pub reference: Arc<str>,
-    /// XPath of the element.
+    /// `XPath` of the element.
     pub path: Arc<str>,
     /// Start tag of the element (with its original attributes).
     pub element: Arc<str>,
@@ -51,7 +51,7 @@ pub enum ErrorKind {
     Host(HostError),
 }
 
-/// Rendering/compilation error with QWeb location information.
+/// Rendering/compilation error with `QWeb` location information.
 ///
 /// The payload is boxed so that `Result<T, Error>` stays one pointer wide.
 pub struct Error {
@@ -139,7 +139,7 @@ impl Error {
         self.inner.location.as_ref().map(|f| &*f.template)
     }
 
-    /// XPath of the element where the error occurred, if known.
+    /// `XPath` of the element where the error occurred, if known.
     pub fn path(&self) -> Option<&str> {
         self.inner.location.as_ref().map(|f| &*f.path)
     }
@@ -155,6 +155,7 @@ impl Error {
     }
 
     /// Attach the location unless already present (innermost wins).
+    #[must_use]
     pub fn with_location(mut self, frame: Frame) -> Self {
         if self.inner.location.is_none() {
             self.inner.location = Some(frame);
@@ -163,6 +164,7 @@ impl Error {
     }
 
     /// Add a caller frame (or the location if there is none yet).
+    #[must_use]
     pub fn with_frame(mut self, frame: Frame) -> Self {
         if self.inner.location.is_none() {
             self.inner.location = Some(frame);

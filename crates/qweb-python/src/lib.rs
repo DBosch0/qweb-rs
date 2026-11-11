@@ -1,5 +1,5 @@
 //! Python bindings (`qweb_rs._qweb_rs`): a [`Host`] implemented on the
-//! CPython object protocol.
+//! `CPython` object protocol.
 //!
 //! Every value operation goes through the same C-API calls the generated
 //! Python code would make (`getattr`, `getitem`, rich comparison, calls,
@@ -37,7 +37,7 @@ use qweb_core::xml::{Document, NodeId, NsMap, XStr};
 use qweb_core::{Engine, Error, ErrorKind, Host, Lazy, Result};
 
 /// The GIL is always held while rendering: every entry point is a Python call.
-#[inline(always)]
+#[inline]
 fn py() -> Python<'static> {
     unsafe { Python::assume_attached() }
 }
@@ -49,6 +49,7 @@ fn herr(e: PyErr) -> Error {
 }
 
 /// Python objects used by the host, resolved once.
+#[derive(Debug)]
 struct Globals {
     markup: Py<PyAny>,
     builtins: Py<PyDict>,
@@ -64,7 +65,7 @@ struct Globals {
 }
 
 /// The [`Host`] of the Python binding: values are Python objects.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct PyHost {
     g: Arc<Globals>,
 }
@@ -264,6 +265,10 @@ impl Host for PyHost {
     fn str(&self, s: &str) -> Py<PyAny> {
         PyString::new(py(), s).into_any().unbind()
     }
+    #[allow(
+        clippy::expect_used,
+        reason = "fails only on a Python MemoryError; pyo3 raises the panic as an exception"
+    )]
     fn markup(&self, s: &str) -> Py<PyAny> {
         let py = py();
         self.g
@@ -276,9 +281,17 @@ impl Host for PyHost {
     fn bytes(&self, b: &[u8]) -> Py<PyAny> {
         PyBytes::new(py(), b).into_any().unbind()
     }
+    #[allow(
+        clippy::unwrap_used,
+        reason = "fails only on a Python MemoryError; pyo3 raises the panic as an exception"
+    )]
     fn tuple(&self, items: Vec<Py<PyAny>>) -> Py<PyAny> {
         PyTuple::new(py(), items).unwrap().into_any().unbind()
     }
+    #[allow(
+        clippy::unwrap_used,
+        reason = "fails only on a Python MemoryError; pyo3 raises the panic as an exception"
+    )]
     fn list(&self, items: Vec<Py<PyAny>>) -> Py<PyAny> {
         PyList::new(py(), items).unwrap().into_any().unbind()
     }
@@ -295,6 +308,10 @@ impl Host for PyHost {
         }
         Ok(d.into_any().unbind())
     }
+    #[allow(
+        clippy::unwrap_used,
+        reason = "fails only on a Python MemoryError; pyo3 raises the panic as an exception"
+    )]
     fn slice(
         &self,
         lower: Option<Py<PyAny>>,
@@ -344,6 +361,10 @@ impl Host for PyHost {
     fn scope_new(&self) -> Py<PyDict> {
         PyDict::new(py()).unbind()
     }
+    #[allow(
+        clippy::expect_used,
+        reason = "fails only on a Python MemoryError; pyo3 raises the panic as an exception"
+    )]
     fn scope_copy(&self, scope: &Py<PyDict>) -> Py<PyDict> {
         scope.bind(py()).copy().expect("dict.copy").unbind()
     }
@@ -390,11 +411,11 @@ impl Host for PyHost {
                 d.call_method1(update, (v,))?;
             } else if v.is_instance_of::<PyList>() || v.is_instance_of::<PyTuple>() {
                 let first = v.get_item(0)?;
-                if !(first.is_instance_of::<PyList>() || first.is_instance_of::<PyTuple>()) {
-                    d.call_method1(update, (PyList::new(py, [v])?,))?;
-                } else {
+                if first.is_instance_of::<PyList>() || first.is_instance_of::<PyTuple>() {
                     let as_dict = self.g.dict_type.bind(py).call1((v,))?;
                     d.call_method1(update, (as_dict,))?;
+                } else {
+                    d.call_method1(update, (PyList::new(py, [v])?,))?;
                 }
             }
             Ok(())
@@ -408,10 +429,11 @@ impl Host for PyHost {
     // ----- object protocol -------------------------------------------------
     fn get_attr(&self, obj: &Py<PyAny>, name: &Py<PyAny>) -> Result<Py<PyAny>> {
         let py = py();
-        obj.bind(py)
-            .getattr(name.bind(py).cast::<PyString>().unwrap())
-            .map(Bound::unbind)
-            .map_err(herr)
+        let name = name
+            .bind(py)
+            .cast::<PyString>()
+            .map_err(|e| herr(e.into()))?;
+        obj.bind(py).getattr(name).map(Bound::unbind).map_err(herr)
     }
     fn get_item(&self, obj: &Py<PyAny>, key: &Py<PyAny>) -> Result<Py<PyAny>> {
         let py = py();
@@ -656,7 +678,10 @@ impl Host for PyHost {
         match items.len() {
             2 => {
                 let mut it = items.into_iter();
-                Ok((it.next().unwrap().unbind(), it.next().unwrap().unbind()))
+                match (it.next(), it.next()) {
+                    (Some(k), Some(v)) => Ok((k.unbind(), v.unbind())),
+                    _ => unreachable!("two items"),
+                }
             }
             n if n < 2 => Err(herr(PyValueError::new_err(format!(
                 "not enough values to unpack (expected 2, got {n})"
@@ -683,6 +708,10 @@ impl Host for PyHost {
     }
 
     // ----- lazy content --------------------------------------------------------
+    #[allow(
+        clippy::unwrap_used,
+        reason = "fails only on a Python MemoryError; pyo3 raises the panic as an exception"
+    )]
     fn wrap_lazy(&self, lazy: Arc<Lazy<Self>>) -> Py<PyAny> {
         Py::new(py(), QwebContent { lazy }).unwrap().into_any()
     }
@@ -963,7 +992,7 @@ impl Host for PyHost {
         let py = py();
         (|| -> PyResult<Vec<(XStr, XStr)>> {
             let d = PyDict::new(py);
-            for (k, v) in attrs.iter() {
+            for (k, v) in &attrs {
                 d.set_item(k.as_str(), v.as_str())?;
             }
             d.set_item("__is_static_node", true)?;
@@ -1118,6 +1147,10 @@ fn with_api(
     let ptr: *mut (dyn CompileApi<PyHost> + '_) = api;
     // SAFETY: the pointer is cleared before `api` goes out of scope, and every
     // use checks it is still set (proxies kept by Python code become inert).
+    #[allow(
+        clippy::transmute_ptr_to_ptr,
+        reason = "only a transmute can extend the lifetime of a trait object pointer"
+    )]
     let ptr: *mut (dyn CompileApi<PyHost> + 'static) = unsafe { std::mem::transmute(ptr) };
     let shared = std::rc::Rc::new(ApiCell {
         ptr: std::cell::Cell::new(Some(ptr)),
@@ -1163,6 +1196,14 @@ fn py_to_text(v: &Bound<'_, PyAny>) -> PyResult<String> {
 pub struct PyElement {
     api: SharedApi,
     id: NodeId,
+}
+
+impl std::fmt::Debug for PyElement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Element")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl PyElement {
@@ -1297,6 +1338,14 @@ pub struct PyAttrib {
     id: NodeId,
 }
 
+impl std::fmt::Debug for PyAttrib {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Attrib")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PyAttrib {
     fn with<R>(&self, f: impl FnOnce(&Document, NodeId) -> R) -> PyResult<R> {
         api_of(&self.api, |a| Ok(f(a.doc(), self.id)))
@@ -1386,6 +1435,12 @@ pub struct PyCompiler {
     api: SharedApi,
 }
 
+impl std::fmt::Debug for PyCompiler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Compiler").finish_non_exhaustive()
+    }
+}
+
 #[pymethods]
 impl PyCompiler {
     /// `_append_text`: add static text (`None`/`False` add nothing).
@@ -1397,6 +1452,10 @@ impl PyCompiler {
         })
     }
     /// `_compile_node`: compile an element at this point.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "pyo3 extracts the argument by value"
+    )]
     fn compile_node(&self, el: PyRef<'_, PyElement>) -> PyResult<()> {
         let id = el.id;
         api_of(&self.api, |a| {
@@ -1406,6 +1465,10 @@ impl PyCompiler {
     /// Insert a new element `tag` in place of `el` and move `el` (with its
     /// tail) inside it. Returns the new element.
     #[pyo3(signature = (el, tag, attrib=None))]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "pyo3 extracts the argument by value"
+    )]
     fn wrap(
         &self,
         el: PyRef<'_, PyElement>,
@@ -1444,7 +1507,7 @@ impl PyCompiler {
     }
 }
 
-/// Convert a core error into a Python exception, with QWeb location attributes:
+/// Convert a core error into a Python exception, with `QWeb` location attributes:
 /// `qweb_template`, `qweb_ref`, `qweb_path`, `qweb_element` (innermost element)
 /// and `qweb_source` (call stack as `(ref, path, element)` tuples, outermost first).
 fn to_pyerr(py: Python<'_>, e: Error) -> PyErr {
@@ -1521,6 +1584,7 @@ fn to_pyerr(py: Python<'_>, e: Error) -> PyErr {
 
 /// Lazily rendered template fragment (`t-set` / `t-call` body), like Odoo's `QwebContent`.
 #[pyclass(name = "QwebContent", module = "qweb_rs", frozen)]
+#[derive(Debug)]
 pub struct QwebContent {
     lazy: Arc<Lazy<PyHost>>,
 }
@@ -1554,6 +1618,7 @@ impl QwebContent {
             .map(|s| s.chars().count())
             .map_err(|e| to_pyerr(py, e))
     }
+    #[allow(clippy::unused_self, reason = "a Python method")]
     fn __repr__(&self) -> String {
         "<QwebContent>".to_owned()
     }
@@ -1625,6 +1690,7 @@ const DEFAULT_CACHE_KEYS: &[&str] = &["lang"];
 /// A compiled template (see `Engine.compile`), usable as a `load()` result
 /// or rendered directly.
 #[pyclass(name = "CompiledTemplate", module = "qweb_rs", frozen)]
+#[derive(Debug)]
 pub struct CompiledTemplate {
     program: Arc<Program<PyHost>>,
 }
@@ -1641,8 +1707,9 @@ impl CompiledTemplate {
     }
 }
 
-/// QWeb engine holding a compiled-template cache.
+/// `QWeb` engine holding a compiled-template cache.
 #[pyclass(name = "Engine", module = "qweb_rs", frozen)]
+#[derive(Debug)]
 pub struct PyEngine {
     engine: Arc<Engine<PyHost>>,
     cache_keys: Arc<Vec<String>>,
@@ -1720,10 +1787,12 @@ impl PyEngine {
         let load_bridge = host.g.load_bridge.clone_ref(py);
         Ok(PyEngine {
             engine: Engine::with_options(host, trust_names),
-            cache_keys: Arc::new(
-                cache_keys
-                    .unwrap_or_else(|| DEFAULT_CACHE_KEYS.iter().map(|s| s.to_string()).collect()),
-            ),
+            cache_keys: Arc::new(cache_keys.unwrap_or_else(|| {
+                DEFAULT_CACHE_KEYS
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect()
+            })),
             load_bridge,
         })
     }
@@ -1821,6 +1890,10 @@ impl PyEngine {
 /// (``'validation'`` or ``'value'``).
 #[pyfunction]
 #[pyo3(signature = (source, specs, inherit_branding=false))]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "pyo3 extracts the argument by value"
+)]
 fn apply_inheritance(
     py: Python<'_>,
     source: &str,
