@@ -1,7 +1,9 @@
 # Build the qweb-rs Python package (wheels + sdist) and publish it.
 #
-#   push tag vX.Y.Z  -> TestPyPI, then PyPI after approval (environment `pypi`)
-#   manual run       -> TestPyPI only (a dry run of the whole pipeline)
+#   run on tag vX.Y.Z -> TestPyPI, then PyPI after approval (environment `pypi`).
+#                        release-plz.yml starts it on the tag it creates; a
+#                        tag pushed by hand also starts it.
+#   manual run on a branch -> TestPyPI only (a dry run of the whole pipeline)
 #
 # Uploads use PyPI trusted publishing (OIDC): no API token is stored. On
 # test.pypi.org and pypi.org, add a (pending) trusted publisher with

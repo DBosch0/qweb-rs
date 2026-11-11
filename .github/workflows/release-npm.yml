@@ -1,7 +1,9 @@
 # Build the `qweb-wasm` npm package (scripts/build_npm.sh) and publish it.
 #
-#   push tag vX.Y.Z  -> npm, after approval (environment `npm`)
-#   manual run       -> build, test and `npm publish --dry-run` only
+#   run on tag vX.Y.Z -> npm, after approval (environment `npm`).
+#                        release-plz.yml starts it on the tag it creates; a
+#                        tag pushed by hand also starts it.
+#   manual run on a branch -> build, test and `npm publish --dry-run` only
 #
 # Publishing uses npm trusted publishing (OIDC, with provenance): no token is
 # stored. npm only lets you add a trusted publisher to a package that already

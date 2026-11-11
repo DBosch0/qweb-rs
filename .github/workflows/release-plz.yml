@@ -1,0 +1,88 @@
+# Releases with release-plz (release-plz.toml).
+#
+# On every push to master:
+# - `release`: publishes the crates whose version is not on crates.io yet,
+#   creates the `vX.Y.Z` tag and GitHub release, then starts the PyPI and npm
+#   release workflows on that tag. (A tag created with GITHUB_TOKEN does not
+#   trigger `on: push: tags` workflows; a workflow_dispatch does.)
+# - `release-pr`: opens or updates the release PR, which bumps the version
+#   and updates CHANGELOG.md. Merging it makes the next push release.
+#   CI does not run on that PR by itself (it is opened with GITHUB_TOKEN):
+#   close and reopen it to run the checks.
+#
+# crates.io uses trusted publishing (no CARGO_REGISTRY_TOKEN): on crates.io,
+# for each published crate, add a trusted publisher with repository
+# DBosch0/qweb-rs and workflow release-plz.yml.
+name: Release-plz
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Release-plz release
+    if: github.repository_owner == 'DBosch0'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      pull-requests: read
+      id-token: write # crates.io trusted publishing
+      actions: write # start the PyPI and npm workflows
+    concurrency:
+      group: release-plz-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - id: release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Start the PyPI and npm releases
+        if: steps.release-plz.outputs.releases_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASES: ${{ steps.release-plz.outputs.releases }}
+        run: |
+          tag=$(echo "$RELEASES" | jq -r '.[] | select(.package_name == "qweb-core") | .tag')
+          if [ -z "$tag" ] || [ "$tag" = null ]; then
+            echo "::error::qweb-core was not released: $RELEASES"
+            exit 1
+          fi
+          gh workflow run release-python.yml --repo "$GITHUB_REPOSITORY" --ref "$tag"
+          gh workflow run release-npm.yml --repo "$GITHUB_REPOSITORY" --ref "$tag"
+          echo "Started the PyPI and npm releases of $tag." >> "$GITHUB_STEP_SUMMARY"
+
+  release-pr:
+    name: Release-plz PR
+    needs: release
+    if: github.repository_owner == 'DBosch0'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
