@@ -211,6 +211,17 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
 
+  # Public API compatibility of the published crates (qweb-core, qweb-value,
+  # qweb-inherit, qweb-wasm) against their latest version on crates.io.
+  # Fails when a change needs a bigger version bump than Cargo.toml has: in
+  # 0.x, a breaking change needs the minor version bumped (0.1.x -> 0.2.0).
+  # qweb-python is skipped (publish = false).
+  semver:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+
   # Dependency policy (deny.toml): licenses, banned/duplicate crates, sources,
   # and RustSec advisories. A new advisory can appear without any change here,
   # so it is reported but does not fail the build.
