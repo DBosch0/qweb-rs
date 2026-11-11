@@ -178,14 +178,21 @@ jobs:
           path: crates/qweb-python/dist/*.whl
 
   # Miri on the core's only unsafe code (xstr.rs).
+  # XStr (the core's only unsafe code) under Miri, on the host and on a
+  # big-endian target (s390x, interpreted by Miri: no emulator needed).
   miri:
+    name: miri (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-gnu, s390x-unknown-linux-gnu]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri
-      - run: cargo miri test -p qweb-core --locked xstr
+      - run: cargo miri test -p qweb-core --locked --target ${{ matrix.target }} xstr
 
   # Line coverage of the Rust code, from both the Rust tests and the Python
   # tests (which run the instrumented extension module).
