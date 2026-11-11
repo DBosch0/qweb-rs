@@ -11,6 +11,13 @@ All packages share one version: the crates on crates.io (`qweb-core`,
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/DBosch0/qweb-rs/compare/v0.1.2...v0.1.3) - 2026-11-11
+
+### Other
+
+- resolving pedantic lints
+- add badges
+
 ## [0.1.2](https://github.com/DBosch0/qweb-rs/compare/v0.1.0...v0.1.2) - 2026-11-11
 
 First release on all three registries.
