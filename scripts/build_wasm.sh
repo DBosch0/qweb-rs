@@ -2,14 +2,16 @@
 # Build the qweb-wasm package.
 #   scripts/build_wasm.sh               -> target/wasm-pkg/{no-modules,nodejs}
 #   scripts/build_wasm.sh <web addon>   -> also writes <web addon>/static/src/core/qweb_wasm/
-# Needs the wasm32-unknown-unknown target and wasm-bindgen 0.2.128 on PATH.
+# Needs the wasm32-unknown-unknown target and wasm-bindgen 0.2.130 on PATH.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 cargo build -q -p qweb-wasm --target wasm32-unknown-unknown --profile wasm
 WASM=target/wasm32-unknown-unknown/wasm/qweb_wasm.wasm
 for t in no-modules nodejs; do
-    wasm-bindgen --target "$t" --out-dir "target/wasm-pkg/$t" "$WASM"
+    # Drop the function names (about 33 KB gzipped) and the producers section.
+    wasm-bindgen --target "$t" --remove-name-section --remove-producers-section \
+        --out-dir "target/wasm-pkg/$t" "$WASM"
 done
 if [ $# -ge 1 ]; then
     OUT="$1/static/src/core/qweb_wasm"

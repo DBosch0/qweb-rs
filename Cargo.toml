@@ -26,4 +26,6 @@ codegen-units = 1
 inherits = "release"
 opt-level = "s"
 panic = "abort"
-strip = true
+# Keep the target_features section: wasm-bindgen reads it to pick the calling
+# convention of its glue. scripts/build_wasm.sh drops the name section instead.
+strip = "debuginfo"

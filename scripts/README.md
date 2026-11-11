@@ -11,9 +11,9 @@ scripts/build_wasm.sh <odoo>/addons/web        # also writes <odoo>/addons/web/s
 
 It needs:
 - the wasm target: `rustup target add wasm32-unknown-unknown`;
-- `wasm-bindgen` **0.2.128** on `PATH`. It must match the version that
+- `wasm-bindgen` **0.2.130** on `PATH`. It must match the version that
   `crates/qweb-wasm/Cargo.toml` pins:
-  `cargo install wasm-bindgen-cli --version 0.2.128`.
+  `cargo install wasm-bindgen-cli --version 0.2.130`.
 
 What it does:
 1. Builds `qweb-wasm` with the size-optimized `wasm` profile of the root
