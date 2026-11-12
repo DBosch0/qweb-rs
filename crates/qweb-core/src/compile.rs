@@ -9,8 +9,9 @@
 //! compiles templates as they are loaded. Custom directives
 //! ([`Host::compile_directive`]) see it through [`CompileApi`].
 
-use std::fmt::Write as _;
-use std::sync::Arc;
+use std::fmt::{self, Write as _};
+use std::sync::{Arc, atomic::AtomicUsize};
+use std::{borrow, mem};
 
 use crate::error::{Error, ErrorKind, Result};
 use crate::expr::{self, Expr, ParseError};
@@ -229,7 +230,7 @@ impl TextBuf {
     }
 
     /// Add a formatted chunk.
-    fn push_fmt(&mut self, args: std::fmt::Arguments<'_>) {
+    fn push_fmt(&mut self, args: fmt::Arguments<'_>) {
         self.last = Some(self.buf.len());
         let _ = self.buf.write_fmt(args);
     }
@@ -435,8 +436,8 @@ fn compile_bool(attr: Option<XStr>, default: bool) -> bool {
 }
 
 // The compiler state (tree, buffers, compiled blocks) is too large to print.
-impl<H: Host> std::fmt::Debug for Compiler<'_, H> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<H: Host> fmt::Debug for Compiler<'_, H> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Compiler")
             .field("name", &self.name)
             .field("reference", &self.reference)
@@ -541,7 +542,7 @@ impl<'a, H: Host> Compiler<'a, H> {
             viewid_key: host.key("viewid"),
             name,
             reference,
-            size_hint: std::sync::atomic::AtomicUsize::new(0),
+            size_hint: AtomicUsize::new(0),
             locs: c.loc_src,
         })
     }
@@ -664,7 +665,7 @@ impl<'a, H: Host> Compiler<'a, H> {
     }
 
     /// Attribute of a directive (`t-<name>`).
-    fn dattr(&self, d: Directive) -> std::borrow::Cow<'static, str> {
+    fn dattr(&self, d: Directive) -> borrow::Cow<'static, str> {
         match d {
             Directive::Custom(i) => format!("t-{}", self.custom[i as usize]).into(),
             d => d.attr().into(),
@@ -896,7 +897,7 @@ impl<'a, H: Host> Compiler<'a, H> {
 
     fn pre_processing_att(&mut self, id: NodeId) -> Result<()> {
         if self.hooks.pre_processing {
-            let mut attrs = std::mem::take(&mut self.doc.node_mut(id).attrs);
+            let mut attrs = mem::take(&mut self.doc.node_mut(id).attrs);
             let res = self.host.pre_processing_att(self.ctx, &mut attrs);
             self.doc.node_mut(id).attrs = attrs;
             return res;
@@ -967,7 +968,7 @@ impl<'a, H: Host> Compiler<'a, H> {
         let has_ns = !self.doc.node(id).nsmap.is_empty();
         let (unqualified, el_tag) = self.el_tag(id);
         // The attributes are consumed (Python clears them after output).
-        let attrs = std::mem::take(&mut self.doc.node_mut(id).attrs);
+        let attrs = mem::take(&mut self.doc.node_mut(id).attrs);
         let attrib: Vec<(XStr, XStr)> = if has_ns {
             let mut a = self.new_namespaces(id, &cx.nsmap);
             for (k, v) in attrs {

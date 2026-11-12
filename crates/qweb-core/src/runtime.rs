@@ -1,9 +1,12 @@
 //! Interpreter for compiled templates, lazy content and the template cache.
 
 use derive_where::derive_where;
+
 use std::collections::HashMap;
-use std::fmt;
-use std::sync::{Arc, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{
+    Arc, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard, atomic::Ordering,
+};
+use std::{fmt, mem};
 
 use crate::compile::{Compiler, is_void};
 use crate::error::{Error, ErrorKind, Result};
@@ -157,7 +160,7 @@ impl<H: Host> Engine<H> {
         scope: H::Scope,
         ctx: H::Context,
     ) -> Result<String> {
-        let hint = program.size_hint.load(std::sync::atomic::Ordering::Relaxed);
+        let hint = program.size_hint.load(Ordering::Relaxed);
         let mut out = String::with_capacity(hint + hint / 8);
         let mut r = Renderer {
             engine: self,
@@ -168,9 +171,7 @@ impl<H: Host> Engine<H> {
             scratch: String::new(),
         };
         r.run_program(program, scope, ctx, &mut out)?;
-        program
-            .size_hint
-            .store(out.len(), std::sync::atomic::Ordering::Relaxed);
+        program.size_hint.store(out.len(), Ordering::Relaxed);
         Ok(out)
     }
 
@@ -443,7 +444,7 @@ fn write_attributes<H: Host>(
     out: &mut String,
 ) -> Result<()> {
     if h.custom_post_processing(ctx) {
-        let items = std::mem::take(&mut attrs.items);
+        let items = mem::take(&mut attrs.items);
         for (name, value) in h.post_processing_att(ctx, tag, items)? {
             if !(h.is_str(&value) || h.truthy(&value)?) {
                 continue;
@@ -834,7 +835,7 @@ impl<H: Host> Renderer<'_, H> {
                 a.items.extend(s.items.iter().cloned());
                 a
             });
-            let old = std::mem::replace(&mut frame.attrs, attrs);
+            let old = mem::replace(&mut frame.attrs, attrs);
             self.recycle_attrs(old);
             let scope = &mut frame.scope;
             h.scope_set(scope, &f.index, h.int(index as i64));
@@ -1060,7 +1061,7 @@ impl<H: Host> Renderer<'_, H> {
         attrs: &mut AttrMap<H>,
         out: &mut String,
     ) -> Result<()> {
-        let mut buf = std::mem::take(&mut self.scratch);
+        let mut buf = mem::take(&mut self.scratch);
         let res = write_attributes(self.h, ctx, tag, attrs, &mut buf, out);
         self.scratch = buf;
         res

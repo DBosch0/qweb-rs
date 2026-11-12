@@ -18,10 +18,10 @@ pub mod ops;
 pub mod value;
 
 use std::collections::HashMap;
-use std::fmt;
 use std::sync::{
     Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
 };
+use std::{fmt, mem, vec};
 
 use indexmap::IndexMap;
 use qweb_core::expr::{BinOp, CmpOp, UnOp};
@@ -171,7 +171,7 @@ impl ValueHost {
 
     /// Return and clear the warnings emitted so far.
     pub fn take_warnings(&self) -> Vec<String> {
-        std::mem::take(&mut *lock(&self.inner.warnings))
+        mem::take(&mut *lock(&self.inner.warnings))
     }
 
     /// Convenience: build an engine and render `template` (`render()` semantics:
@@ -602,7 +602,7 @@ pub enum LoopIter {
     /// `t-foreach` over an int: `range(n)`, produced lazily.
     Range(std::ops::Range<i64>),
     /// Items collected from an iterable.
-    Items(std::vec::IntoIter<Value>),
+    Items(vec::IntoIter<Value>),
     /// Items of a list, tuple or set, and the next index.
     Seq(Arc<Vec<Value>>, usize),
 }

@@ -5,8 +5,8 @@
 //! location information: the innermost element where it happened
 //! ([`Error::location`]) and the template call stack ([`Error::stack`]).
 
-use core::{error, fmt, result};
 use std::sync::Arc;
+use std::{error, fmt, result};
 
 /// A position in a template: an element of a compiled template.
 #[derive(Debug, Clone)]
@@ -22,7 +22,7 @@ pub struct Frame {
 }
 
 /// An error raised by host code, carried through the engine untouched.
-pub type HostError = Box<dyn std::error::Error + Send + Sync>;
+pub type HostError = Box<dyn error::Error + Send + Sync>;
 
 /// Error kinds, mapped by hosts onto their native exception classes.
 #[derive(Debug)]
@@ -115,7 +115,7 @@ impl Error {
     }
 
     /// Wrap an error raised by host code ([`ErrorKind::Host`]).
-    pub fn host(err: impl std::error::Error + Send + Sync + 'static) -> Self {
+    pub fn host(err: impl error::Error + Send + Sync + 'static) -> Self {
         Self::new(ErrorKind::Host(Box::new(err)))
     }
 
@@ -232,7 +232,7 @@ impl fmt::Display for Error {
 
 impl error::Error for Error {
     /// The host error, for [`ErrorKind::Host`].
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match &self.inner.kind {
             ErrorKind::Host(e) => Some(&**e),
             _ => None,

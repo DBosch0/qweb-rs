@@ -1,7 +1,7 @@
 //! Port of `odoo/tools/template_inheritance.py` (`apply_inheritance_specs`).
 
-use core::fmt::Write as _;
-use core::{error, fmt};
+use std::error;
+use std::fmt::{self, Write as _};
 
 use qweb_core::compile::py_repr_str as py_repr;
 use qweb_core::escape::escape as html_escape;

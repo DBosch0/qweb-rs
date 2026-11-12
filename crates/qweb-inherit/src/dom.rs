@@ -4,8 +4,10 @@
 //! Nodes live in an arena ([`Dom`]); a tree is referenced by its root id.
 //! Freed subtrees are recycled.
 
-use core::fmt::Write as _;
-use core::hash::Hash;
+use std::collections::HashSet;
+use std::fmt::Write as _;
+use std::hash::Hash;
+use std::mem;
 
 use qweb_core::xml::{Document, NodeKind, XML_NS, XStr, local_name, namespace};
 
@@ -207,7 +209,7 @@ impl Dom {
         let mut stack = vec![id];
         while let Some(x) = stack.pop() {
             let n = &mut self.nodes[x];
-            stack.extend(std::mem::take(&mut n.children));
+            stack.extend(mem::take(&mut n.children));
             *n = DomNode::new(DomKind::Text);
             n.free = true;
             self.free.push(x);
@@ -223,7 +225,7 @@ impl Dom {
     /// not in `keep` (temporary clones, sentinels, removed nodes...).
     pub fn release(&mut self, keep: &[DomId]) {
         let Some(log) = self.log.take() else { return };
-        let keep: std::collections::HashSet<DomId> = keep.iter().copied().collect();
+        let keep: HashSet<DomId> = keep.iter().copied().collect();
         let doomed: Vec<DomId> = log
             .into_iter()
             .filter(|&id| self.is_live(id) && !keep.contains(&self.top(id)))
@@ -363,7 +365,7 @@ impl Dom {
     /// `node.cloneNode(true)` keeping text translation contexts (`deepClone`).
     pub fn deep_clone(&mut self, id: DomId) -> DomId {
         let mut n = self.nodes[id].clone();
-        let children = std::mem::take(&mut n.children);
+        let children = mem::take(&mut n.children);
         n.parent = None;
         n.doc_child = false;
         let new = self.alloc(n);

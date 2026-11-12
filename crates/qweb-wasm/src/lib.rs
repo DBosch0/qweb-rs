@@ -13,6 +13,7 @@
 
 #![deny(missing_docs)]
 
+use std::mem;
 use std::sync::Arc;
 
 use qweb_core::runtime::Engine;
@@ -121,7 +122,7 @@ impl TemplateStore {
     /// `console.warn` messages of the last `applyInheritance`.
     #[wasm_bindgen(js_name = takeWarnings)]
     pub fn take_warnings(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.js.warnings)
+        mem::take(&mut self.js.warnings)
     }
 
     /// Qualified tag name of element `h`.

@@ -5,11 +5,11 @@
 //! allocation. Longer strings take one exact-size allocation.
 
 use std::borrow::{Borrow, Cow};
-use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::mem::ManuallyDrop;
 use std::ops::Deref;
-use std::ptr::NonNull;
+use std::ptr::{self, NonNull};
+use std::{cmp, fmt, mem, slice, str};
 
 /// Longest string stored inline.
 pub const INLINE: usize = 23;
@@ -60,9 +60,9 @@ const LENS: [Tag; INLINE + 1] = {
      L17, L18, L19, L20, L21, L22, L23]
 };
 
-const _: () = assert!(std::mem::size_of::<XStr>() == 24);
-const _: () = assert!(std::mem::size_of::<Option<XStr>>() == 24);
-const _: () = assert!(std::mem::size_of::<Data>() == 16);
+const _: () = assert!(mem::size_of::<XStr>() == 24);
+const _: () = assert!(mem::size_of::<Option<XStr>>() == 24);
+const _: () = assert!(mem::size_of::<Data>() == 16);
 const _: () = assert!(Tag::Heap as usize == INLINE + 1);
 
 // SAFETY: an `XStr` owns its heap string like a `Box<str>` (which is Send
@@ -129,16 +129,15 @@ impl XStr {
             // bytes of the `repr(C)` struct, contiguous and initialised (see
             // `XStr::inline`), and `bytes[..len]` is a copy of a whole `&str`.
             unsafe {
-                let bytes =
-                    std::slice::from_raw_parts(std::ptr::from_ref::<XStr>(self).cast::<u8>(), len);
-                std::str::from_utf8_unchecked(bytes)
+                let bytes = slice::from_raw_parts(ptr::from_ref::<XStr>(self).cast::<u8>(), len);
+                str::from_utf8_unchecked(bytes)
             }
         } else {
             // SAFETY: on the heap, `data.heap` is the live string taken from
             // a `Box<str>` in `XStr::heap`.
             unsafe {
                 let h = self.data.heap;
-                std::str::from_utf8_unchecked(std::slice::from_raw_parts(h.ptr.as_ptr(), h.len))
+                str::from_utf8_unchecked(slice::from_raw_parts(h.ptr.as_ptr(), h.len))
             }
         }
     }
@@ -153,7 +152,7 @@ impl XStr {
         // `XStr::heap`); `this` is not dropped, so the box is rebuilt once.
         unsafe {
             let h = this.data.heap;
-            Box::from_raw(std::ptr::slice_from_raw_parts_mut(h.ptr.as_ptr(), h.len) as *mut str)
+            Box::from_raw(ptr::slice_from_raw_parts_mut(h.ptr.as_ptr(), h.len) as *mut str)
         }
     }
 
@@ -175,7 +174,7 @@ impl Drop for XStr {
             unsafe {
                 let h = self.data.heap;
                 drop(Box::from_raw(
-                    std::ptr::slice_from_raw_parts_mut(h.ptr.as_ptr(), h.len) as *mut str,
+                    ptr::slice_from_raw_parts_mut(h.ptr.as_ptr(), h.len) as *mut str,
                 ));
             }
         }
@@ -324,13 +323,13 @@ impl Hash for XStr {
 }
 
 impl PartialOrd for XStr {
-    fn partial_cmp(&self, other: &XStr) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &XStr) -> Option<cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for XStr {
-    fn cmp(&self, other: &XStr) -> std::cmp::Ordering {
+    fn cmp(&self, other: &XStr) -> cmp::Ordering {
         self.as_str().cmp(other.as_str())
     }
 }
@@ -355,6 +354,8 @@ eq_str!(str, &str, String);
 
 #[cfg(test)]
 mod tests {
+    use std::thread;
+
     use super::*;
 
     #[test]
@@ -394,7 +395,7 @@ mod tests {
         all.push(None);
         let copies = all.clone();
         assert_eq!(all, copies);
-        let moved = std::thread::spawn(move || copies.len()).join().unwrap();
+        let moved = thread::spawn(move || copies.len()).join().unwrap();
         assert_eq!(moved, all.len());
     }
 }

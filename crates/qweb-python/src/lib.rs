@@ -16,6 +16,7 @@
 #![deny(missing_docs)]
 
 use std::sync::Arc;
+use std::{cell, fmt, mem, rc, string};
 
 use pyo3::PyTypeInfo;
 use pyo3::basic::CompareOp;
@@ -1132,11 +1133,11 @@ fn loaded_from_py(r: &Bound<'_, PyAny>) -> PyResult<Loaded<PyHost>> {
 /// (a nested directive handler calling a proxy of an outer one while the
 /// outer `compile_node` runs) is an error instead of a second `&mut`.
 struct ApiCell {
-    ptr: std::cell::Cell<Option<*mut (dyn CompileApi<PyHost> + 'static)>>,
-    busy: std::cell::Cell<bool>,
+    ptr: cell::Cell<Option<*mut (dyn CompileApi<PyHost> + 'static)>>,
+    busy: cell::Cell<bool>,
 }
 
-type SharedApi = std::rc::Rc<ApiCell>;
+type SharedApi = rc::Rc<ApiCell>;
 
 /// Run `f` with Python proxies over `api`; the proxies are invalidated after.
 fn with_api(
@@ -1151,10 +1152,10 @@ fn with_api(
         clippy::transmute_ptr_to_ptr,
         reason = "only a transmute can extend the lifetime of a trait object pointer"
     )]
-    let ptr: *mut (dyn CompileApi<PyHost> + 'static) = unsafe { std::mem::transmute(ptr) };
-    let shared = std::rc::Rc::new(ApiCell {
-        ptr: std::cell::Cell::new(Some(ptr)),
-        busy: std::cell::Cell::new(false),
+    let ptr: *mut (dyn CompileApi<PyHost> + 'static) = unsafe { mem::transmute(ptr) };
+    let shared = rc::Rc::new(ApiCell {
+        ptr: cell::Cell::new(Some(ptr)),
+        busy: cell::Cell::new(false),
     });
     let res = f(shared.clone(), node);
     shared.ptr.set(None);
@@ -1198,8 +1199,8 @@ pub struct PyElement {
     id: NodeId,
 }
 
-impl std::fmt::Debug for PyElement {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for PyElement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Element")
             .field("id", &self.id)
             .finish_non_exhaustive()
@@ -1338,8 +1339,8 @@ pub struct PyAttrib {
     id: NodeId,
 }
 
-impl std::fmt::Debug for PyAttrib {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for PyAttrib {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Attrib")
             .field("id", &self.id)
             .finish_non_exhaustive()
@@ -1435,8 +1436,8 @@ pub struct PyCompiler {
     api: SharedApi,
 }
 
-impl std::fmt::Debug for PyCompiler {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for PyCompiler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Compiler").finish_non_exhaustive()
     }
 }
@@ -1790,7 +1791,7 @@ impl PyEngine {
             cache_keys: Arc::new(cache_keys.unwrap_or_else(|| {
                 DEFAULT_CACHE_KEYS
                     .iter()
-                    .map(std::string::ToString::to_string)
+                    .map(string::ToString::to_string)
                     .collect()
             })),
             load_bridge,

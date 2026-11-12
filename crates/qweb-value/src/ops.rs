@@ -12,7 +12,8 @@
     reason = "the errors are Python's, described above"
 )]
 
-use core::cmp::Ordering;
+use std::cmp::Ordering;
+use std::iter;
 use std::sync::Arc;
 
 use qweb_core::expr::{BinOp, CmpOp, UnOp};
@@ -315,14 +316,14 @@ fn percent_format(fmt: &str, args: &Value, markup: bool) -> Result<String> {
             let pad = width - text.chars().count();
             if spec.starts_with('-') {
                 out.push_str(&text);
-                out.extend(std::iter::repeat_n(' ', pad));
+                out.extend(iter::repeat_n(' ', pad));
             } else {
                 let fill = if spec.starts_with('0') && conv != 's' {
                     '0'
                 } else {
                     ' '
                 };
-                out.extend(std::iter::repeat_n(fill, pad));
+                out.extend(iter::repeat_n(fill, pad));
                 out.push_str(&text);
             }
         } else {

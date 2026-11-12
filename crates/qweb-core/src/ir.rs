@@ -10,7 +10,7 @@
 
 use derive_where::derive_where;
 use std::fmt;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, atomic::AtomicUsize};
 
 use crate::expr::{BinOp, CmpOp, UnOp};
 use crate::host::{Host, TemplateRef};
@@ -482,7 +482,7 @@ pub struct Program<H: Host> {
     /// Template reference for errors (`viewid` as text, or the name).
     pub reference: Arc<str>,
     /// Size of the last rendered output (to presize the output buffer).
-    pub size_hint: std::sync::atomic::AtomicUsize,
+    pub size_hint: AtomicUsize,
     /// Source of the location texts.
     pub(crate) locs: LocSource,
 }

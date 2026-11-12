@@ -1,7 +1,8 @@
 //! Python-like dynamic values.
 
-use core::cmp::Ordering;
-use core::fmt::{self, Write as _};
+use std::cmp::Ordering;
+use std::fmt::{self, Write as _};
+use std::str;
 use std::sync::Arc;
 
 use indexmap::IndexMap;
@@ -191,7 +192,7 @@ pub enum Value {
 }
 
 impl fmt::Debug for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.repr())
     }
 }
@@ -226,7 +227,7 @@ impl<const N: usize> StackStr<N> {
 
     fn as_str(&self) -> &str {
         // Only whole `&str`s are copied in.
-        std::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+        str::from_utf8(&self.buf[..self.len]).unwrap_or("")
     }
 }
 

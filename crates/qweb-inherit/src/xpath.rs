@@ -8,8 +8,9 @@
 // XPath compares numbers exactly, as IEEE 754 doubles.
 #![allow(clippy::float_cmp)]
 
-use core::{fmt, hash::Hash};
 use std::collections::HashMap;
+use std::fmt::{self, Debug};
+use std::hash::Hash;
 
 use qweb_core::xml::{Document, NodeId, NodeKind, XStr, local_name, namespace};
 
@@ -33,7 +34,7 @@ pub enum XNode {
 pub struct XPathError(pub String);
 
 impl fmt::Display for XPathError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
 }
@@ -912,7 +913,7 @@ pub enum Kind {
 /// The `XPath` data model over some tree representation.
 pub trait Tree {
     /// Node handle.
-    type N: Copy + Eq + Hash + std::fmt::Debug;
+    type N: Copy + Eq + Hash + Debug;
     /// Node type of `n`.
     fn kind(&self, n: Self::N) -> Kind;
     /// Parent of `n` (the owner element for an attribute).

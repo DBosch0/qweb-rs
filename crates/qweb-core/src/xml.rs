@@ -10,9 +10,9 @@
 //! Nodes live in an arena ([`Document::nodes`]) and refer to each other by
 //! index. Detached nodes stay in the arena.
 
-use core::{error, fmt};
 use std::borrow::Cow;
 use std::sync::{Arc, OnceLock};
+use std::{error, fmt, mem};
 
 pub use crate::xstr::XStr;
 
@@ -328,7 +328,7 @@ impl Document {
             Some(d) => d.nodes[id].clone(),
             None => self.nodes[id].clone(),
         };
-        let children = std::mem::take(&mut src.children);
+        let children = mem::take(&mut src.children);
         self.nodes.push(src);
         let new = self.nodes.len() - 1;
         for c in children {
@@ -645,7 +645,7 @@ pub struct XmlError {
 }
 
 impl fmt::Display for XmlError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}, line {}", self.message, self.line)
     }
 }
@@ -817,7 +817,7 @@ impl<'a> Parser<'a> {
         let qname = self.read_name()?;
         // Raw attributes first: namespace declarations must be known before
         // resolving prefixes.
-        let mut raw_attrs = std::mem::take(&mut self.raw_attrs);
+        let mut raw_attrs = mem::take(&mut self.raw_attrs);
         raw_attrs.clear();
         let mut own_ns: Vec<(Option<String>, String)> = Vec::new();
         let self_closing;

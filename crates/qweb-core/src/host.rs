@@ -4,8 +4,9 @@
 //! trait on top of the `CPython` object protocol (giving exact Python
 //! semantics); `qweb-value` provides a pure-Rust implementation.
 
-use core::fmt;
 use derive_where::derive_where;
+
+use std::fmt;
 use std::sync::Arc;
 
 use crate::compile::CompileApi;
@@ -41,7 +42,7 @@ impl TemplateRef {
 }
 
 impl fmt::Display for TemplateRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TemplateRef::Id(i) => write!(f, "{i}"),
             TemplateRef::Name(n) => write!(f, "{n}"),

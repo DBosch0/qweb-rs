@@ -17,7 +17,7 @@
 
 mod lexer;
 
-use core::fmt;
+use std::{fmt, mem};
 
 use lexer::{LexError, Tok};
 
@@ -227,7 +227,7 @@ pub(crate) enum ParseError {
 }
 
 impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ParseError::Unsupported(m) => write!(f, "unsupported expression: {m}"),
             ParseError::Syntax(m) => write!(f, "invalid syntax: {m}"),
@@ -298,7 +298,7 @@ impl Parser {
     fn next(&mut self) -> Tok {
         if self.pos < self.toks.len() - 1 {
             self.pos += 1;
-            std::mem::replace(&mut self.toks[self.pos - 1], Tok::End)
+            mem::replace(&mut self.toks[self.pos - 1], Tok::End)
         } else {
             Tok::End
         }
