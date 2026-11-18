@@ -79,7 +79,11 @@ impl<H: Host> Loaded<H> {
 }
 
 /// Compile hooks enabled for one compilation (see [`Host::compile_hooks`]).
+///
+/// New hooks may be added in minor releases: build it from
+/// [`Default::default`] and set the fields you need.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct CompileHooks {
     /// Directive evaluation order (`_directives_eval_order`, names without
     /// `t-`). Names that are not built-in are custom directives handled by
@@ -97,7 +101,11 @@ pub struct CompileHooks {
 }
 
 /// Options that change the compiled code; part of the template cache key.
+///
+/// New options may be added in minor releases: build it from
+/// [`Default::default`] and set the fields you need.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct CompileOptions {
     /// Output comments and processing instructions (`preserve_comments`).
     pub preserve_comments: bool,
@@ -234,6 +242,18 @@ pub trait Host: Sized + Send + Sync + 'static {
     fn scope_new(&self) -> Self::Scope;
     /// `scope.copy()` (shallow).
     fn scope_copy(&self, scope: &Self::Scope) -> Self::Scope;
+    /// A second handle to the same scope, for copy-on-write: the renderer
+    /// never writes through a shared handle while
+    /// [`scope_is_unique`](Host::scope_is_unique) is false (it copies the
+    /// scope first). The default is a copy.
+    fn scope_share(&self, scope: &Self::Scope) -> Self::Scope {
+        self.scope_copy(scope)
+    }
+    /// Whether no other handle to this scope exists (see
+    /// [`scope_share`](Host::scope_share)).
+    fn scope_is_unique(&self, _scope: &Self::Scope) -> bool {
+        true
+    }
     /// `scope.get(key)`, `None` when missing.
     fn scope_get(&self, scope: &Self::Scope, key: &Self::Key) -> Option<Self::Value>;
     /// `key in scope`.

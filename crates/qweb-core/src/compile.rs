@@ -369,7 +369,100 @@ fn loop_vars_read<H: Host>(body: &[Stmt<H>], var: &str) -> LoopVars {
         vars: LoopVars::NONE,
     };
     used.stmts(body);
-    used.vars
+    used.vars.intersection(LoopVars::ALL)
+}
+
+/// Set [`Foreach::live`] for the loops of a function body: the variables
+/// read by the loop body or by any statement that can run after the loop
+/// in the same function (the rest of each enclosing statement list, and the
+/// whole body of each enclosing loop for its next iterations). A function
+/// has its own scope (a `t-call` and lazy content get a copy), so nothing
+/// else can read them.
+fn loop_liveness<H: Host>(block: &mut [Stmt<H>]) {
+    let mut lives = Vec::new();
+    collect_live(block, &mut Vec::new(), &mut lives);
+    let mut lives = lives.into_iter();
+    apply_live(block, &mut lives);
+}
+
+/// The sub-bodies of a statement, in a fixed order.
+fn sub_bodies<H: Host>(stmt: &Stmt<H>) -> [&[Stmt<H>]; 3] {
+    match stmt {
+        Stmt::If { then, orelse, .. } => [then, orelse, &[]],
+        Stmt::Groups { body, .. } => [body, &[], &[]],
+        Stmt::Foreach(f) => [&f.body, &[], &[]],
+        Stmt::Out(o) => [
+            &o.tag_open,
+            &o.tag_close,
+            match &o.otherwise {
+                Otherwise::Default(body) => body,
+                _ => &[],
+            },
+        ],
+        _ => [&[], &[], &[]],
+    }
+}
+
+fn collect_live<'a, H: Host>(
+    stmts: &'a [Stmt<H>],
+    cont: &mut Vec<&'a [Stmt<H>]>,
+    lives: &mut Vec<LoopVars>,
+) {
+    for (i, stmt) in stmts.iter().enumerate() {
+        let rest = &stmts[i + 1..];
+        if let Stmt::Foreach(f) = stmt {
+            let live = if f.each == LoopVars::ALL {
+                LoopVars::EVERY
+            } else {
+                let mut used = VarUse {
+                    var: &f.name,
+                    vars: LoopVars::NONE,
+                };
+                for part in [&f.body[..], rest].into_iter().chain(cont.iter().copied()) {
+                    used.stmts(part);
+                }
+                used.vars
+            };
+            lives.push(live);
+        }
+        cont.push(rest);
+        if let Stmt::Foreach(f) = stmt {
+            cont.push(&f.body);
+        }
+        for body in sub_bodies(stmt) {
+            collect_live(body, cont, lives);
+        }
+        if let Stmt::Foreach(_) = stmt {
+            cont.pop();
+        }
+        cont.pop();
+    }
+}
+
+fn apply_live<H: Host>(stmts: &mut [Stmt<H>], lives: &mut impl Iterator<Item = LoopVars>) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::If { then, orelse, .. } => {
+                apply_live(then, lives);
+                apply_live(orelse, lives);
+            }
+            Stmt::Groups { body, .. } => apply_live(body, lives),
+            Stmt::Foreach(f) => {
+                if let Some(live) = lives.next() {
+                    f.live = live;
+                }
+                apply_live(&mut f.body, lives);
+            }
+            Stmt::Out(o) => {
+                apply_live(&mut o.tag_open, lives);
+                apply_live(&mut o.tag_close, lives);
+                if let Otherwise::Default(body) = &mut o.otherwise {
+                    apply_live(body, lives);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 struct VarUse<'a> {
@@ -379,12 +472,12 @@ struct VarUse<'a> {
 
 impl VarUse<'_> {
     fn all(&mut self) {
-        self.vars = LoopVars::ALL;
+        self.vars = LoopVars::EVERY;
     }
 
     fn stmts<H: Host>(&mut self, stmts: &[Stmt<H>]) {
         for stmt in stmts {
-            if self.vars == LoopVars::ALL {
+            if self.vars == LoopVars::EVERY {
                 return;
             }
             match stmt {
@@ -424,6 +517,9 @@ impl VarUse<'_> {
                     }
                 }
                 Stmt::Out(o) => {
+                    for a in &o.attrs {
+                        self.attr(&a.value);
+                    }
                     match (&o.content, &o.convert) {
                         (OutContent::Expr(e), None) => self.ex(e),
                         (OutContent::Slot, None) => {}
@@ -477,7 +573,8 @@ impl VarUse<'_> {
                     Some("_odd") => LoopVars::ODD,
                     Some("_even") => LoopVars::EVEN,
                     Some("_parity") => LoopVars::PARITY,
-                    // `x` is always assigned, `x_size` before the loop
+                    Some("_size") => LoopVars::SIZE,
+                    // `x` is always assigned
                     _ => LoopVars::NONE,
                 };
                 self.vars = self.vars.union(var);
@@ -761,6 +858,9 @@ impl<'a, H: Host> Compiler<'a, H> {
         main.extend(c.flush(true));
         c.blocks.push(main);
         let main = c.blocks.len() - 1;
+        for block in &mut c.blocks {
+            loop_liveness(block);
+        }
         Ok(Program {
             blocks: c.blocks,
             main,
@@ -1293,6 +1393,7 @@ impl<'a, H: Host> Compiler<'a, H> {
                     .map_err(|e| self.located(e, id))?;
                 code.extend(c);
                 self.fuse_attrs(&mut code);
+                self.fuse_out_attrs(&mut code);
             }
         }
         // Unordered directives still present: Python re-dispatches the last
@@ -1411,6 +1512,105 @@ impl<'a, H: Host> Compiler<'a, H> {
     /// in a row (`attrs = {}`, `attrs[name] = value` with distinct names,
     /// static text, `_render_attributes`), replace these statements by the
     /// text and one [`Stmt::Attrs`], which needs no dict.
+    /// The rendered start of an attribute (` name="`), with its value and
+    /// closing quote when the value is a constant; `None` when the constant
+    /// cannot be converted at compile time.
+    fn attr_rendered(&self, name: &str, value: &AttrSrc<H>) -> Option<Box<str>> {
+        let text = match value {
+            AttrSrc::Static(s) => Some(s.to_string()),
+            AttrSrc::Format(Format::Const(v)) => {
+                let mut s = String::new();
+                self.host.write_str(v, &mut s).ok()?;
+                Some(s)
+            }
+            _ => None,
+        };
+        let mut rendered = String::with_capacity(name.len() + 4);
+        rendered.push(' ');
+        escape_into(&mut rendered, name);
+        rendered.push_str("=\"");
+        if let Some(text) = text {
+            // `_post_processing_att`: neutralise javascript: URLs in href.
+            if !(name == "href" && crate::url::is_malicious_href(&text)) {
+                escape_into(&mut rendered, &text);
+            }
+            rendered.push('"');
+        }
+        Some(rendered.into())
+    }
+
+    /// `attrs = {}`, `attrs[name] = value` (distinct names), then a `t-out`
+    /// without conversion whose start tag renders `attrs`: the attributes
+    /// move into the [`Out`] (static text in between is kept before it).
+    fn fuse_out_attrs(&self, code: &mut Code<H>) {
+        let Some(Stmt::Out(o)) = code.last() else {
+            return;
+        };
+        let flushes = o
+            .tag_open
+            .iter()
+            .filter(|s| matches!(s, Stmt::AttrsFlush { .. }))
+            .count();
+        if o.convert.is_some()
+            || !o.attrs.is_empty()
+            || matches!(o.otherwise, Otherwise::ForceDisplay { .. })
+            || flushes != 1
+            || !o
+                .tag_open
+                .iter()
+                .all(|s| matches!(s, Stmt::Text(_) | Stmt::AttrsFlush { .. }))
+        {
+            return;
+        }
+        let out = code.len() - 1;
+        let mut end = out;
+        while end > 0 && matches!(code[end - 1], Stmt::Text(_)) {
+            end -= 1;
+        }
+        let mut start = end;
+        while start > 0 && matches!(code[start - 1], Stmt::AttrSet { .. }) {
+            start -= 1;
+        }
+        if start == end || start == 0 || !matches!(code[start - 1], Stmt::AttrsInit) {
+            return;
+        }
+        let mut rendered = Vec::with_capacity(end - start);
+        for (i, a) in code[start..end].iter().enumerate() {
+            let Stmt::AttrSet { name, value, .. } = a else {
+                return;
+            };
+            let duplicate = code[start..start + i]
+                .iter()
+                .any(|b| matches!(b, Stmt::AttrSet { name: other, .. } if other == name));
+            let Some(r) = (!duplicate)
+                .then(|| self.attr_rendered(name, value))
+                .flatten()
+            else {
+                return;
+            };
+            rendered.push(r);
+        }
+        let Some(Stmt::Out(mut o)) = code.pop() else {
+            return;
+        };
+        let texts: Vec<Stmt<H>> = code.drain(end..).collect();
+        let sets: Vec<Stmt<H>> = code.drain(start..).collect();
+        code.pop(); // `attrs = {}`
+        let mut attrs = Vec::with_capacity(sets.len());
+        for (stmt, rendered) in sets.into_iter().zip(rendered) {
+            if let Stmt::AttrSet { name, value, .. } = stmt {
+                attrs.push(Attr {
+                    name,
+                    value,
+                    rendered,
+                });
+            }
+        }
+        o.attrs = attrs.into();
+        code.extend(texts);
+        code.push(Stmt::Out(o));
+    }
+
     fn fuse_attrs(&self, code: &mut Code<H>) {
         let Some(Stmt::AttrsFlush { .. }) = code.last() else {
             return;
@@ -1936,6 +2136,8 @@ impl<'a, H: Host> Compiler<'a, H> {
             parity_odd: h.str("odd"),
             parity_even: h.str("even"),
             each,
+            live: LoopVars::EVERY,
+            name: Arc::from(expr_as.as_str()),
             body,
             loc,
         })));
@@ -2034,6 +2236,7 @@ impl<'a, H: Host> Compiler<'a, H> {
             tag_open,
             tag_close,
             otherwise,
+            attrs: Box::new([]),
             loc,
         })));
         Ok(code)

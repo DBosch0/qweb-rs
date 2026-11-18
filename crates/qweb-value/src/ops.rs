@@ -819,18 +819,11 @@ pub(crate) fn dict_pairs(v: &Value) -> Result<Vec<(Value, Value)>> {
 }
 
 /// Call a builtin function.
-// TODO: take `args: &[Value]` in the next breaking release (0.2): the
-// function never consumes the vector. Changing it now would break the API.
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "public API of 0.1; see the NOTE above"
-)]
-pub fn call_builtin(b: Builtin, args: Vec<Value>) -> Result<Value> {
+pub fn call_builtin(b: Builtin, args: &[Value]) -> Result<Value> {
     use Builtin::{
         Abs, All, Any, Bool, Chr, Dict, Divmod, Enumerate, Float, Int, Len, List, Max, Min, Ord,
         Range, Repr, Round, Set, Sorted, Str, Sum, Tuple, Zip,
     };
-    let args = args.as_slice();
     let a0 = || arg(args, 0, b.name());
     Ok(match b {
         Len => Value::Int(a0()?.py_len()? as i64),
@@ -1031,7 +1024,7 @@ mod tests {
     use super::*;
 
     fn call(b: &str, args: &[Value]) -> Result<Value> {
-        call_builtin(Builtin::from_name(b).unwrap(), args.to_vec())
+        call_builtin(Builtin::from_name(b).unwrap(), args)
     }
 
     #[test]

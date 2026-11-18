@@ -236,6 +236,31 @@ case('set_dict', '<t t-name="main"><t t-set="{\'a\': 1, \'b\': 2}"/><t t-out="a"
 case('set_invalid_name', '<t t-name="main"><t t-set="a-b" t-value="1"/></t>')
 case('set_dunder', '<t t-name="main"><t t-set="__a" t-value="1"/></t>')
 case('set_zero_value', '<t t-name="main"><t t-set="0" t-value="1"/></t>')
+# loop variables read after their loop, without anything seeing the scope
+case('foreach_vars_read_after', '<t t-name="main"><t t-foreach="[1, 2, 3]" t-as="i"><t t-foreach="[4, 5]" t-as="j">x</t><t t-out="j_last"/><t t-out="j_size"/></t>|' + all_vars('i') + '|<t t-foreach="{}" t-as="k"/><t t-out="k_size"/></t>')
+case('foreach_vars_next_iteration', '<t t-name="main"><t t-foreach="[1, 2, 3]" t-as="i">(<t t-out="j_index"/><t t-out="j_parity"/>)<t t-foreach="\'abc\'" t-as="j"/></t></t>')
+case('foreach_vars_after_if', '<t t-name="main"><t t-foreach="[1, 2]" t-as="i"><t t-if="i == 2"><t t-foreach="[7, 8, 9]" t-as="j"/></t><t t-else=""><t t-out="j_value"/></t></t><t t-out="j_index"/><t t-out="j_last"/></t>')
+case('foreach_vars_after_lazy', '<t t-name="main"><t t-foreach="[1, 2]" t-as="i">x</t><t t-set="c">(' + all_vars('i') + ')</t><t t-out="c"/></t>')
+case('foreach_vars_after_call', {
+    'main': '<t t-name="main"><t t-foreach="[1, 2, 3]" t-as="i">x</t><t t-call="sub"/></t>',
+    'sub': '<t t-name="sub">' + all_vars('i') + '</t>',
+})
+case('foreach_vars_default_body', '<t t-name="main"><t t-foreach="[1, 2]" t-as="i"><b t-out="None">d<t t-foreach="[3]" t-as="j"/></b></t><t t-out="j_last"/><t t-out="i_even"/></t>')
+# the attributes of an element with t-out stay in `attrs` without content
+case('out_attrs_leak', '<t t-name="main"><a t-att-href="\'/x\'" t-attf-title="t{{ 1 }}" class="c" t-out="None"/><span t-if="True">y</span><a t-att-href="\'/y\'" t-out="False"/><i t-out="1"/></t>')
+case('out_attrs_default', '<t t-name="main"><a t-att-class="\'c\'" t-attf-href="javascript:{{ 1 }}" t-att-title="None" t-out="None">def</a>|<a t-att-class="\'c\'" data-x="&quot;" t-out="\'v\'">def</a></t>')
+case('out_attrs_dup', '<t t-name="main"><a t-att-class="\'c\'" t-att="{\'class\': \'d\'}" t-out="1"/><a t-att="{\'id\': 1}" t-att-id="2" t-out="None"/><i t-out="1"/></t>')
+case('out_attrs_slot', {
+    'main': '<t t-name="main"><t t-call="sub"><i>body</i></t></t>',
+    'sub': '<t t-name="sub"><div t-att-class="\'c\'" t-out="0"/><p t-att-id="1" t-out="0">d</p></t>',
+})
+# lazy content shares the scope until one of them writes
+case('lazy_cow_loop', '<t t-name="main"><t t-foreach="[1, 2, 3]" t-as="i"><t t-set="c"><t t-out="i"/>-<t t-out="v"/></t><t t-set="v" t-value="i * 10"/><t t-out="c"/>;</t></t>')
+case('lazy_cow_body_writes', '<t t-name="main"><t t-set="v" t-value="1"/><t t-set="c"><t t-out="v"/><t t-set="v" t-value="2"/><t t-out="v"/></t><t t-out="c"/><t t-out="c"/><t t-out="v"/></t>')
+case('lazy_cow_kept', {
+    'main': '<t t-name="main"><t t-set="v" t-value="1"/><t t-call="sub"><t t-out="v"/></t><t t-set="v" t-value="2"/><t t-call="sub"><t t-out="v"/></t></t>',
+    'sub': '<t t-name="sub"><t t-set="v" t-value="3"/>[<t t-out="0"/>]<t t-out="v"/></t>',
+})
 case('set_lazy_snapshot', '<t t-name="main"><t t-set="x" t-value="1"/><t t-set="b"><t t-out="x"/></t><t t-set="x" t-value="2"/><t t-out="b"/><t t-out="x"/></t>')
 case('set_lazy_inner_set', '<t t-name="main"><t t-set="b"><t t-set="y" t-value="5"/><t t-out="y"/></t><t t-out="b"/>|<t t-out="y"/></t>')
 case('set_body_in_condition', '<t t-name="main"><t t-set="abc"> <span a="b"> a </span> </t><div t-if="abc">123</div><div t-if="not abc">456</div></t>')

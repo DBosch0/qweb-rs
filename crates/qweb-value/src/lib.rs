@@ -121,16 +121,15 @@ impl ValueHost {
         if let Some(lang) = ctx.options.get("lang") {
             extra.push(format!("lang={}", lang.repr()));
         }
-        CompileOptions {
-            preserve_comments: truthy("preserve_comments"),
-            edit_translations: truthy("edit_translations"),
-            dev_mode: false,
-            nsmap: ctx
-                .nsmap
-                .clone()
-                .unwrap_or_else(qweb_core::xml::empty_nsmap),
-            extra,
-        }
+        let mut opts = CompileOptions::default();
+        opts.preserve_comments = truthy("preserve_comments");
+        opts.edit_translations = truthy("edit_translations");
+        opts.nsmap = ctx
+            .nsmap
+            .clone()
+            .unwrap_or_else(qweb_core::xml::empty_nsmap);
+        opts.extra = extra;
+        opts
     }
 
     fn build(loader: Option<Box<LoaderFn>>) -> Self {
@@ -382,7 +381,7 @@ impl Host for ValueHost {
             ));
         }
         match func {
-            Value::Builtin(b) => ops::call_builtin(*b, args),
+            Value::Builtin(b) => ops::call_builtin(*b, &args),
             Value::Method(m) => ops::call_method(&m.0, &m.1, &args),
             other => Err(Error::type_error(format!(
                 "'{}' object is not callable",
@@ -489,7 +488,11 @@ impl Host for ValueHost {
                     .values()
                     .map(|(k, v)| Value::Tuple(Arc::new(vec![k.clone(), v.clone()])))
                     .collect();
-                (LoopIter::Items(items.into_iter()), Some(d.len() as i64), true)
+                (
+                    LoopIter::Items(items.into_iter()),
+                    Some(d.len() as i64),
+                    true,
+                )
             }
             Value::List(items) | Value::Tuple(items) | Value::Set(items) => {
                 // Iterate the shared list (a snapshot: lists are never changed in place).
@@ -549,10 +552,9 @@ impl Host for ValueHost {
             .get_or_init(|| {
                 let opts = Self::make_compile_options(ctx);
                 let default = DEFAULT.get_or_init(|| {
-                    Arc::new(CompileOptions {
-                        nsmap: qweb_core::xml::empty_nsmap(),
-                        ..Default::default()
-                    })
+                    let mut opts = CompileOptions::default();
+                    opts.nsmap = qweb_core::xml::empty_nsmap();
+                    Arc::new(opts)
                 });
                 if opts == **default {
                     default.clone()

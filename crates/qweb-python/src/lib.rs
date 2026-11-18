@@ -16,7 +16,7 @@
 #![deny(missing_docs)]
 
 use std::sync::Arc;
-use std::{cell, fmt, mem, rc, string};
+use std::{borrow, cell, fmt, mem, rc, string};
 
 use pyo3::PyTypeInfo;
 use pyo3::basic::CompareOp;
@@ -141,13 +141,13 @@ impl PyCtx {
             };
             extra.push(repr);
         }
-        let compile = Arc::new(CompileOptions {
-            preserve_comments: truthy_opt(d, "preserve_comments")?,
-            edit_translations: truthy_opt(d, "edit_translations")?,
-            dev_mode: truthy_opt(d, "dev_mode")?,
-            nsmap: nsmap.clone().unwrap_or_else(qweb_core::xml::empty_nsmap),
-            extra,
-        });
+        let mut compile = CompileOptions::default();
+        compile.preserve_comments = truthy_opt(d, "preserve_comments")?;
+        compile.edit_translations = truthy_opt(d, "edit_translations")?;
+        compile.dev_mode = truthy_opt(d, "dev_mode")?;
+        compile.nsmap = nsmap.clone().unwrap_or_else(qweb_core::xml::empty_nsmap);
+        compile.extra = extra;
+        let compile = Arc::new(compile);
         let flags = match bridge.bind(py).getattr(pyo3::intern!(py, "flags")) {
             Ok(f) => f.extract::<u32>().unwrap_or(0),
             Err(_) => 0,
@@ -256,9 +256,27 @@ fn write_plain_scalar(b: &Bound<'_, PyAny>, out: &mut String) -> bool {
     }
 }
 
-/// Append a Python str (`to_cow` copies only for non-UTF-8 surrogates).
+/// The text of a Python str, borrowed from the UTF-8 cache of the str
+/// without validating it again (pyo3 does on abi3 builds). A str with lone
+/// surrogates has no UTF-8 form: `to_cow` replaces them, as before.
+fn str_text<'a>(s: &'a Bound<'_, PyString>) -> Result<borrow::Cow<'a, str>> {
+    let mut size: pyo3::ffi::Py_ssize_t = 0;
+    // SAFETY: `s` is a str (the GIL is held); the buffer belongs to it.
+    let data = unsafe { pyo3::ffi::PyUnicode_AsUTF8AndSize(s.as_ptr(), &raw mut size) };
+    if data.is_null() {
+        drop(PyErr::fetch(s.py()));
+        return s.to_cow().map_err(herr);
+    }
+    // SAFETY: CPython's UTF-8 buffer is valid UTF-8 of `size` bytes and
+    // lives as long as the str.
+    Ok(borrow::Cow::Borrowed(unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(data.cast::<u8>(), size as usize))
+    }))
+}
+
+/// Append a Python str.
 fn push_str(out: &mut String, s: &Bound<'_, PyString>) -> Result<()> {
-    out.push_str(&s.to_cow().map_err(herr)?);
+    out.push_str(&str_text(s)?);
     Ok(())
 }
 
@@ -399,6 +417,13 @@ impl Host for PyHost {
     )]
     fn scope_copy(&self, scope: &Py<PyDict>) -> Py<PyDict> {
         scope.bind(py()).copy().expect("dict.copy").unbind()
+    }
+    fn scope_share(&self, scope: &Py<PyDict>) -> Py<PyDict> {
+        scope.clone_ref(py())
+    }
+    fn scope_is_unique(&self, scope: &Py<PyDict>) -> bool {
+        // SAFETY: the pointer is a live dict (the GIL is held).
+        unsafe { pyo3::ffi::Py_REFCNT(scope.as_ptr()) == 1 }
     }
     fn scope_get(&self, scope: &Py<PyDict>, key: &Py<PyAny>) -> Option<Py<PyAny>> {
         let py = py();
@@ -633,7 +658,7 @@ impl Host for PyHost {
     fn write_str_escaped(&self, v: &Py<PyAny>, out: &mut String) -> Result<()> {
         let b = v.bind(py());
         if let Ok(s) = b.cast_exact::<PyString>() {
-            escape_into(out, &s.to_cow().map_err(herr)?);
+            escape_into(out, &str_text(s)?);
             return Ok(());
         }
         // str() of int/float/bool never contains characters to escape
@@ -641,14 +666,14 @@ impl Host for PyHost {
             return Ok(());
         }
         let s = b.str().map_err(herr)?;
-        escape_into(out, &s.to_cow().map_err(herr)?);
+        escape_into(out, &str_text(&s)?);
         Ok(())
     }
     fn write_escaped(&self, v: &Py<PyAny>, out: &mut String) -> Result<()> {
         let py = py();
         let b = v.bind(py);
         if let Ok(s) = b.cast_exact::<PyString>() {
-            escape_into(out, &s.to_cow().map_err(herr)?);
+            escape_into(out, &str_text(s)?);
             return Ok(());
         }
         // str() of int/float/bool never contains characters to escape
@@ -671,7 +696,7 @@ impl Host for PyHost {
             return push_str(out, &r.str().map_err(herr)?);
         }
         let s = b.str().map_err(herr)?;
-        escape_into(out, &s.to_cow().map_err(herr)?);
+        escape_into(out, &str_text(&s)?);
         Ok(())
     }
 
@@ -957,13 +982,13 @@ impl Host for PyHost {
                 ),
                 _ => None,
             };
-            Ok(CompileHooks {
-                order,
-                check_directive: flag("check_directive")?,
-                check_expr: flag("check_expr")?,
-                pre_processing: flag("pre_processing")?,
-                post_processing: flag("post_processing")?,
-            })
+            let mut hooks = CompileHooks::default();
+            hooks.order = order;
+            hooks.check_directive = flag("check_directive")?;
+            hooks.check_expr = flag("check_expr")?;
+            hooks.pre_processing = flag("pre_processing")?;
+            hooks.post_processing = flag("post_processing")?;
+            Ok(hooks)
         })()
         .map_err(herr)
     }

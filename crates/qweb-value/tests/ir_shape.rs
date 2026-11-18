@@ -108,3 +108,97 @@ fn attributes_without_dict() {
         assert_eq!(direct(content), None, "{content}");
     }
 }
+
+/// `live` of the first `t-foreach` of the template (searched in nested
+/// statements too).
+fn live(content: &str) -> Option<LoopVars> {
+    fn find(stmts: &[Stmt<ValueHost>]) -> Option<LoopVars> {
+        stmts.iter().find_map(|s| match s {
+            Stmt::Foreach(f) => Some(f.live),
+            Stmt::If { then, orelse, .. } => find(then).or_else(|| find(orelse)),
+            _ => None,
+        })
+    }
+    let program = compile(content).ok()?;
+    find(&program.blocks[program.main])
+}
+
+#[test]
+fn loop_vars_stored_only_when_live() {
+    let lp = |after: &str| {
+        live(&format!(
+            r#"<t t-foreach="xs" t-as="x"><i t-out="x"/></t>{after}"#
+        ))
+    };
+    // nothing reads them: only `x` is assigned
+    assert_eq!(lp(""), Some(LoopVars::NONE));
+    assert_eq!(lp(r#"<i t-out="y_index"/>"#), Some(LoopVars::NONE));
+    // read after the loop, by name
+    assert_eq!(lp(r#"<i t-out="x_size"/>"#), Some(LoopVars::SIZE));
+    assert_eq!(
+        lp(r#"<i t-if="x_last" t-out="x_index"/>"#),
+        Some(LoopVars::LAST.union(LoopVars::INDEX))
+    );
+    // or something sees the scope
+    for after in [
+        r#"<t t-call="sub"/>"#,
+        r#"<t t-set="c">lazy</t>"#,
+        r#"<i t-field="x.name"/>"#,
+    ] {
+        assert_eq!(lp(after), Some(LoopVars::EVERY), "{after}");
+    }
+    // the body reads them, or gives the scope away
+    assert_eq!(
+        live(r#"<t t-foreach="xs" t-as="x"><i t-out="x_odd"/></t>"#),
+        Some(LoopVars::ODD)
+    );
+    assert_eq!(
+        live(r#"<t t-foreach="xs" t-as="x"><t t-call="sub"/></t>"#),
+        Some(LoopVars::EVERY)
+    );
+    // an enclosing loop runs its body again: what precedes the loop in it
+    // runs after it
+    let program = compile(
+        r#"<t t-foreach="xs" t-as="y"><i t-out="x_first"/><t t-foreach="y" t-as="x"/></t>"#,
+    )
+    .unwrap();
+    let Stmt::Foreach(outer) = &program.blocks[program.main][0] else {
+        panic!("not a loop");
+    };
+    let inner = outer.body.iter().find_map(|s| match s {
+        Stmt::Foreach(f) => Some(f.live),
+        _ => None,
+    });
+    assert_eq!(inner, Some(LoopVars::FIRST));
+}
+
+/// The names of the attributes moved into the first `t-out` of the
+/// template (`None`: no `t-out` at the top level).
+fn out_attrs(content: &str) -> Option<Vec<String>> {
+    let program = compile(content).ok()?;
+    program.blocks[program.main].iter().find_map(|s| match s {
+        Stmt::Out(o) => Some(o.attrs.iter().map(|a| a.name.to_string()).collect()),
+        _ => None,
+    })
+}
+
+#[test]
+fn out_attributes_without_dict() {
+    assert_eq!(
+        out_attrs(r#"<a t-att-href="u" class="c" t-attf-title="{{ t }}" t-out="x"/>"#),
+        // static attributes first
+        Some(vec!["class".into(), "href".into(), "title".into()])
+    );
+    assert_eq!(
+        out_attrs(r#"<a t-att-class="c" t-out="x">default</a>"#),
+        Some(vec!["class".into()])
+    );
+    // no attribute, a `t-att` dict, or a conversion: the dict is kept
+    for content in [
+        r#"<a t-out="x"/>"#,
+        r#"<a t-att="d" t-out="x"/>"#,
+        r#"<a t-att-class="c" t-out="x" t-options="{'widget': 'text'}"/>"#,
+    ] {
+        assert_eq!(out_attrs(content), Some(vec![]), "{content}");
+    }
+}

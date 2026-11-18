@@ -138,8 +138,12 @@ impl LoopVars {
     pub const PARITY: LoopVars = LoopVars(1 << 6);
     /// No variable.
     pub const NONE: LoopVars = LoopVars(0);
-    /// Every variable.
+    /// Every variable assigned at each iteration (all but `x_size`).
     pub const ALL: LoopVars = LoopVars(0x7f);
+    /// `x_size` (assigned before the loop; only in [`Foreach::live`]).
+    pub const SIZE: LoopVars = LoopVars(1 << 7);
+    /// Every variable, `x_size` included.
+    pub const EVERY: LoopVars = LoopVars(0xff);
 
     /// Whether every variable of `other` is in this set.
     pub const fn contains(self, other: LoopVars) -> bool {
@@ -150,6 +154,12 @@ impl LoopVars {
     #[must_use]
     pub const fn union(self, other: LoopVars) -> LoopVars {
         LoopVars(self.0 | other.0)
+    }
+
+    /// The variables of both sets.
+    #[must_use]
+    pub const fn intersection(self, other: LoopVars) -> LoopVars {
+        LoopVars(self.0 & other.0)
     }
 }
 
@@ -281,6 +291,11 @@ pub struct Out<H: Host> {
     pub tag_close: Vec<Stmt<H>>,
     /// What to do without content.
     pub otherwise: Otherwise<H>,
+    /// The attributes of the element (`attrs = {...}` before the content),
+    /// rendered in place of the [`Stmt::AttrsFlush`] of `tag_open` without
+    /// the attribute dict. Empty when they are set by statements before it
+    /// (always with a conversion).
+    pub attrs: Box<[Attr<H>]>,
     /// Location of the element.
     pub loc: Loc,
 }
@@ -369,6 +384,15 @@ pub struct Foreach<H: Host> {
     /// when the body can see the whole scope (`t-call`, lazy content, host
     /// expressions, ...) or assigns one of the loop variables itself.
     pub each: LoopVars,
+    /// Derived variables (with [`LoopVars::SIZE`]) the template can read at
+    /// all: in the body, or after the loop in the same function. The others
+    /// are never assigned. [`LoopVars::EVERY`] when something can see the
+    /// whole scope during or after the loop: then every variable is
+    /// assigned, at the first iteration (in Python's key order) and when the
+    /// loop ends.
+    pub live: LoopVars,
+    /// The `t-as` name.
+    pub name: Arc<str>,
     /// Loop body.
     pub body: Vec<Stmt<H>>,
     /// Location of the element.

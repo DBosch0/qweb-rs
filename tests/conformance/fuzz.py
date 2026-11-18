@@ -128,7 +128,11 @@ class Gen:
                 # assign a loop variable (inside or outside its loop)
                 name = self.r.choice(LOOP_VARS)
             if self.r.random() < 0.5:
-                directives.append(f't-set="{name}" t-value="{self.expr()}"')
+                value = self.expr()
+                while name in LOOPS and value == '2 ** 62':
+                    # a loop source: 2 ** 62 iterations never end
+                    value = self.expr()
+                directives.append(f't-set="{name}" t-value="{value}"')
                 body = ''
                 directives_s = ' '.join(d for d in directives if d)
                 if pushed:
@@ -163,8 +167,13 @@ def make_case(rnd):
     sub1 = f'<t t-name="sub1">{g.text()}<t t-out="0"/>{g.text()}<b t-out="a"/>{g.text()}<u>{seen}</u></t>'
     sub2 = f'<t t-name="sub2"><div>{g.children(2)}</div></t>'
     opts = {'preserve_comments': True} if rnd.random() < 0.2 else {}
-    # the loop variables as the template ends
-    main = f'{main[:-4]}<t t-call="sub1"/></t>'
+    # the loop variables as the template ends: seen through the scope (a
+    # t-call), or only read by name (loops whose variables are not stored)
+    if rnd.random() < 0.5:
+        main = f'{main[:-4]}<t t-call="sub1"/></t>'
+    else:
+        tail = ''.join(f'<t t-out="{v}"/>,' for v in rnd.sample(LOOP_VARS, 6))
+        main = f'{main[:-4]}{tail}</t>'
     return {'main': 'main', 'templates': {'main': main, 'sub1': sub1, 'sub2': sub2}, 'values': VALUES, 'options': opts}
 
 

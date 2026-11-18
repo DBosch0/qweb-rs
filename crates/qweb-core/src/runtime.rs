@@ -405,6 +405,9 @@ impl<H: Host> AttrMap<H> {
 
 struct Frame<H: Host> {
     scope: H::Scope,
+    /// `scope` may be shared ([`Host::scope_share`]): copy it before
+    /// writing, unless it is no longer.
+    shared: bool,
     attrs: Option<AttrMap<H>>,
     /// The `foreach_attrs` local of the Python function: `attrs` as the
     /// last `t-foreach` started, restored at each iteration. Nested loops
@@ -413,6 +416,19 @@ struct Frame<H: Host> {
     /// `values['__qweb_options__']`.
     options: Option<H::Value>,
     ctx: H::Context,
+}
+
+impl<H: Host> Frame<H> {
+    /// The scope, to write to it (copy-on-write).
+    fn scope_mut(&mut self, h: &H) -> &mut H::Scope {
+        if self.shared {
+            if !h.scope_is_unique(&self.scope) {
+                self.scope = h.scope_copy(&self.scope);
+            }
+            self.shared = false;
+        }
+        &mut self.scope
+    }
 }
 
 /// State of one rendering (one call of [`Engine::render`] or [`Lazy::render`]).
@@ -620,6 +636,7 @@ impl<H: Host> Renderer<'_, H> {
         }
         let mut frame = Frame {
             scope,
+            shared: false,
             attrs: None,
             foreach_attrs: None,
             options: None,
@@ -630,7 +647,8 @@ impl<H: Host> Renderer<'_, H> {
 
     fn render_lazy_body(&mut self, lazy: &Lazy<H>, out: &mut String) -> Result<()> {
         let mut frame = Frame {
-            scope: self.h.scope_copy(&lazy.scope),
+            scope: self.h.scope_share(&lazy.scope),
+            shared: true,
             attrs: None,
             foreach_attrs: None,
             options: None,
@@ -663,16 +681,18 @@ impl<H: Host> Renderer<'_, H> {
         program: &Arc<Program<H>>,
         block: usize,
         loc: &Loc,
-        scope: &H::Scope,
-        ctx: &H::Context,
+        frame: &mut Frame<H>,
     ) -> H::Value {
+        // The snapshot shares the scope: the frame copies it at its next
+        // write if the content still exists then.
+        frame.shared = true;
         let lazy = Lazy {
             engine: self.engine.clone(),
             program: program.clone(),
             block,
             loc: loc.clone(),
-            scope: self.h.scope_copy(scope),
-            ctx: ctx.clone(),
+            scope: self.h.scope_share(&frame.scope),
+            ctx: frame.ctx.clone(),
             html: OnceLock::new(),
         };
         self.h.wrap_lazy(Arc::new(lazy))
@@ -711,7 +731,7 @@ impl<H: Host> Renderer<'_, H> {
                     let v = self
                         .eval(value, &frame.scope)
                         .map_err(|e| locate(e, prog, loc))?;
-                    h.scope_set(&mut frame.scope, key, v);
+                    h.scope_set(frame.scope_mut(h), key, v);
                 }
                 Stmt::SetFormat {
                     key,
@@ -727,20 +747,22 @@ impl<H: Host> Renderer<'_, H> {
                             .map_err(|e| locate(e, prog, loc))?;
                         if *markup { h.markup(&s) } else { h.str(&s) }
                     };
-                    h.scope_set(&mut frame.scope, key, v);
+                    h.scope_set(frame.scope_mut(h), key, v);
                 }
                 Stmt::SetUpdate { value, loc } => {
                     let v = self
                         .eval(value, &frame.scope)
                         .map_err(|e| locate(e, prog, loc))?;
-                    h.scope_update_value(&mut frame.scope, &v)
+                    h.scope_update_value(frame.scope_mut(h), &v)
                         .map_err(|e| locate(e, prog, loc))?;
                 }
                 Stmt::SetLazy { key, block, loc } => {
-                    let v = self.make_lazy(prog, *block, loc, &frame.scope, &frame.ctx);
-                    h.scope_set(&mut frame.scope, key, v);
+                    let v = self.make_lazy(prog, *block, loc, frame);
+                    h.scope_set(frame.scope_mut(h), key, v);
                 }
-                Stmt::SetConst { key, value } => h.scope_set(&mut frame.scope, key, value.clone()),
+                Stmt::SetConst { key, value } => {
+                    h.scope_set(frame.scope_mut(h), key, value.clone());
+                }
                 Stmt::Options { base, items, loc } => {
                     let v = (|| -> Result<H::Value> {
                         let base_v = match base {
@@ -827,9 +849,12 @@ impl<H: Host> Renderer<'_, H> {
                 }
                 Stmt::Call(c) => self.run_call(prog, c, frame, out)?,
                 Stmt::Assets(a) => self.run_assets(a, frame, out)?,
-                Stmt::Hook { hook, loc } => h
-                    .run_hook(&frame.ctx, hook, &frame.scope, out)
-                    .map_err(|e| locate(e, prog, loc))?,
+                Stmt::Hook { hook, loc } => {
+                    // the host may write to the scope
+                    frame.scope_mut(h);
+                    h.run_hook(&frame.ctx, hook, &frame.scope, out)
+                        .map_err(|e| locate(e, prog, loc))?;
+                }
             }
         }
         Ok(())
@@ -844,29 +869,41 @@ impl<H: Host> Renderer<'_, H> {
     ) -> Result<()> {
         let h = self.h;
         let loc_err = |e: Error| locate(e, prog, &f.loc);
+        // Nothing can see the whole scope: only the live variables are
+        // assigned, the derived ones only when they are read in the body
+        // (`each`) or after the loop (at its end).
+        let full = f.live == LoopVars::EVERY;
+        let set_size = f.live.contains(LoopVars::SIZE);
+        let (first, last) = if full {
+            (LoopVars::ALL, LoopVars::ALL)
+        } else {
+            (f.each, f.live.intersection(LoopVars::ALL))
+        };
         let src = match &f.source {
             Err(n) => h.iterate(h.int(*n)).map_err(loc_err)?,
             Ok(e) => {
                 let v = self.eval(e, &frame.scope).map_err(loc_err)?;
                 if !h.truthy(&v).map_err(loc_err)? {
                     // A falsy value iterates `[]`: only the size is set.
-                    h.scope_set(&mut frame.scope, &f.size, h.int(0));
+                    if set_size {
+                        h.scope_set(frame.scope_mut(h), &f.size, h.int(0));
+                    }
                     return Ok(());
                 }
                 h.iterate(v).map_err(loc_err)?
             }
         };
-        if let Some(n) = src.size {
-            h.scope_set(&mut frame.scope, &f.size, h.int(n));
+        if set_size && let Some(n) = src.size {
+            h.scope_set(frame.scope_mut(h), &f.size, h.int(n));
         }
         // `foreach_attrs = attrs`
         let saved = frame.attrs.as_ref().map(|a| self.copy_attrs(a));
         let old = mem::replace(&mut frame.foreach_attrs, saved);
         self.recycle_attrs(old);
         // Derived variables the body cannot observe are assigned at the
-        // first iteration (which creates the keys, in order), then only once
-        // the loop ends. `stale` is the last iteration they were skipped
-        // for, with its `x_value`.
+        // first iteration (which creates the keys, in order: `first`), then
+        // only once the loop ends (`last`). `stale` is the last iteration
+        // they were skipped for, with its `x_value`.
         let each = f.each;
         let mut stale: Option<(usize, H::Value)> = None;
         let mut res = Ok(());
@@ -882,10 +919,9 @@ impl<H: Host> Renderer<'_, H> {
             let attrs = frame.foreach_attrs.as_ref().map(|a| self.copy_attrs(a));
             let old = mem::replace(&mut frame.attrs, attrs);
             self.recycle_attrs(old);
-            let scope = &mut frame.scope;
-            let all = index == 0;
-            let sets = |var: LoopVars| all || each.contains(var);
-            if sets(LoopVars::INDEX) {
+            let scope = frame.scope_mut(h);
+            let vars = if index == 0 { first } else { each };
+            if vars.contains(LoopVars::INDEX) {
                 h.scope_set(scope, &f.index, h.int(index as i64));
             }
             let value = if src.mapping {
@@ -897,9 +933,11 @@ impl<H: Host> Renderer<'_, H> {
                     Err(e) => {
                         // Python has assigned `x_index` only.
                         if let Some((i, v)) = stale.take() {
-                            Self::set_loop_vars(h, f, scope, i, v, src.size);
+                            Self::set_loop_vars(h, f, scope, i, &v, src.size, last);
                         }
-                        h.scope_set(scope, &f.index, h.int(index as i64));
+                        if last.contains(LoopVars::INDEX) {
+                            h.scope_set(scope, &f.index, h.int(index as i64));
+                        }
                         res = Err(loc_err(e));
                         break;
                     }
@@ -908,33 +946,8 @@ impl<H: Host> Renderer<'_, H> {
                 h.scope_set(scope, &f.var, item.clone());
                 item
             };
-            if all || each == LoopVars::ALL {
-                Self::set_loop_vars(h, f, scope, index, value, src.size);
-            } else {
-                if each != LoopVars::NONE {
-                    if each.contains(LoopVars::VALUE) {
-                        h.scope_set(scope, &f.value, value.clone());
-                    }
-                    if each.contains(LoopVars::FIRST) {
-                        h.scope_set(scope, &f.first, h.bool(false));
-                    }
-                    if each.contains(LoopVars::LAST)
-                        && let Some(n) = src.size
-                    {
-                        h.scope_set(scope, &f.last, h.bool(index as i64 + 1 == n));
-                    }
-                    let odd = index % 2 == 1;
-                    if each.contains(LoopVars::ODD) {
-                        h.scope_set(scope, &f.odd, h.int(i64::from(odd)));
-                    }
-                    if each.contains(LoopVars::EVEN) {
-                        h.scope_set(scope, &f.even, h.bool(!odd));
-                    }
-                    if each.contains(LoopVars::PARITY) {
-                        let parity = if odd { &f.parity_odd } else { &f.parity_even };
-                        h.scope_set(scope, &f.parity, parity.clone());
-                    }
-                }
+            Self::set_loop_vars(h, f, scope, index, &value, src.size, vars);
+            if vars != LoopVars::ALL && last != LoopVars::NONE {
                 stale = Some((index, value));
             }
             res = self.run(prog, &f.body, frame, out);
@@ -945,34 +958,151 @@ impl<H: Host> Renderer<'_, H> {
             let old = frame.attrs.take();
             self.recycle_attrs(old);
         }
-        if let Some((index, value)) = stale {
-            let scope = &mut frame.scope;
-            h.scope_set(scope, &f.index, h.int(index as i64));
-            Self::set_loop_vars(h, f, scope, index, value, src.size);
+        if let Some((index, value)) = stale
+            && last != LoopVars::NONE
+        {
+            let scope = frame.scope_mut(h);
+            if last.contains(LoopVars::INDEX) {
+                h.scope_set(scope, &f.index, h.int(index as i64));
+            }
+            Self::set_loop_vars(h, f, scope, index, &value, src.size, last);
         }
         res
     }
 
-    /// Assign the derived variables of iteration `index` that follow `x`
-    /// (`x_value` to `x_parity`), in the order of the Python engine.
+    /// Assign the derived variables `vars` of iteration `index` that follow
+    /// `x` (`x_value` to `x_parity`), in the order of the Python engine.
+    #[allow(clippy::too_many_arguments, reason = "the loop state")]
     fn set_loop_vars(
         h: &H,
         f: &Foreach<H>,
         scope: &mut H::Scope,
         index: usize,
-        value: H::Value,
+        value: &H::Value,
         size: Option<i64>,
+        vars: LoopVars,
     ) {
-        h.scope_set(scope, &f.value, value);
-        h.scope_set(scope, &f.first, h.bool(index == 0));
-        if let Some(n) = size {
+        if vars == LoopVars::NONE {
+            return;
+        }
+        if vars.contains(LoopVars::VALUE) {
+            h.scope_set(scope, &f.value, value.clone());
+        }
+        if vars.contains(LoopVars::FIRST) {
+            h.scope_set(scope, &f.first, h.bool(index == 0));
+        }
+        if vars.contains(LoopVars::LAST)
+            && let Some(n) = size
+        {
             h.scope_set(scope, &f.last, h.bool(index as i64 + 1 == n));
         }
         let odd = index % 2 == 1;
-        h.scope_set(scope, &f.odd, h.int(i64::from(odd)));
-        h.scope_set(scope, &f.even, h.bool(!odd));
-        let parity = if odd { &f.parity_odd } else { &f.parity_even };
-        h.scope_set(scope, &f.parity, parity.clone());
+        if vars.contains(LoopVars::ODD) {
+            h.scope_set(scope, &f.odd, h.int(i64::from(odd)));
+        }
+        if vars.contains(LoopVars::EVEN) {
+            h.scope_set(scope, &f.even, h.bool(!odd));
+        }
+        if vars.contains(LoopVars::PARITY) {
+            let parity = if odd { &f.parity_odd } else { &f.parity_even };
+            h.scope_set(scope, &f.parity, parity.clone());
+        }
+    }
+
+    /// [`Stmt::Out`] with its attributes ([`Out::attrs`]): evaluated before
+    /// the content, written in the start tag without the attribute dict,
+    /// which is only built when the tag is not rendered (it stays in
+    /// `attrs`, as in Python).
+    fn run_out_attrs(
+        &mut self,
+        prog: &Arc<Program<H>>,
+        o: &Out<H>,
+        frame: &mut Frame<H>,
+        out: &mut String,
+    ) -> Result<()> {
+        let h = self.h;
+        let mut buf = mem::take(&mut self.scratch);
+        let mut tmp = mem::take(&mut self.attr_tmp);
+        buf.clear();
+        tmp.clear();
+        let content = self
+            .eval_attrs(&o.attrs, &frame.scope, &mut buf, &mut tmp)
+            .and_then(|()| match &o.content {
+                OutContent::Expr(e) => self.eval(e, &frame.scope),
+                OutContent::Slot => Ok(h
+                    .scope_get(&frame.scope, &h.slot_key())
+                    .unwrap_or_else(|| h.str(""))),
+                OutContent::Field { record, .. } => self.eval(record, &frame.scope),
+            });
+        // `attrs = {...}` replaced the previous dict.
+        let old = frame.attrs.take();
+        self.recycle_attrs(old);
+        let content = match content {
+            Ok(c) => c,
+            Err(e) => {
+                tmp.clear();
+                self.scratch = buf;
+                self.attr_tmp = tmp;
+                return Err(e);
+            }
+        };
+        let shown = !h.is_none_or_false(&content);
+        let mut res = Ok(());
+        if shown || matches!(o.otherwise, Otherwise::Default(_)) {
+            for stmt in &o.tag_open {
+                if let Stmt::Text(t) = stmt {
+                    out.push_str(t);
+                } else {
+                    // the `AttrsFlush` (the only other statement, see
+                    // `fuse_out_attrs`)
+                    res = self.emit_attrs(&o.attrs, &mut buf, &tmp, out);
+                    if res.is_err() {
+                        break;
+                    }
+                }
+            }
+        } else {
+            // No tag: the dict stays in `attrs`.
+            let mut map = self.new_attrs();
+            let mut values = tmp.drain(..);
+            let mut start = 0;
+            for a in &o.attrs {
+                let v = match &a.value {
+                    AttrSrc::Static(s) => AttrVal::Static(s.clone()),
+                    AttrSrc::Format(Format::Const(v)) => AttrVal::Value(v.clone()),
+                    AttrSrc::Expr(_) | AttrSrc::Format(Format::Parts(_)) => match values.next() {
+                        Some(AttrTmp::Value(v)) => AttrVal::Value(v),
+                        Some(AttrTmp::Text(end)) => {
+                            let text = buf[start..end].to_owned();
+                            start = end;
+                            AttrVal::Text(text)
+                        }
+                        None => break,
+                    },
+                };
+                map.items.push((a.name.clone(), v));
+            }
+            drop(values);
+            frame.attrs = Some(map);
+        }
+        tmp.clear();
+        self.scratch = buf;
+        self.attr_tmp = tmp;
+        res?;
+        if shown {
+            if let Some(lazy) = h.as_lazy(&content) {
+                self.render_lazy(&lazy, out)
+                    .map_err(|e| e.with_frame(err_frame(prog, &o.loc)))?;
+            } else {
+                h.write_escaped(&content, out)?;
+            }
+            self.run(prog, &o.tag_close, frame, out)
+        } else if let Otherwise::Default(body) = &o.otherwise {
+            self.run(prog, body, frame, out)?;
+            self.run(prog, &o.tag_close, frame, out)
+        } else {
+            Ok(())
+        }
     }
 
     fn run_out(
@@ -983,6 +1113,24 @@ impl<H: Host> Renderer<'_, H> {
         out: &mut String,
     ) -> Result<()> {
         let h = self.h;
+        if !o.attrs.is_empty() {
+            if !h.custom_post_processing(&frame.ctx) {
+                return self.run_out_attrs(prog, o, frame, out);
+            }
+            // The host wants the dict: `attrs = {...}`, then as unfused.
+            let mut map = self.new_attrs();
+            for a in &o.attrs {
+                match self.attr_value(&a.value, &frame.scope) {
+                    Ok(v) => map.items.push((a.name.clone(), v)),
+                    Err(e) => {
+                        self.recycle_attrs(Some(map));
+                        return Err(e);
+                    }
+                }
+            }
+            let old = frame.attrs.replace(map);
+            self.recycle_attrs(old);
+        }
         let mut content = match &o.content {
             OutContent::Expr(e) => self.eval(e, &frame.scope)?,
             OutContent::Slot => h
@@ -992,6 +1140,8 @@ impl<H: Host> Renderer<'_, H> {
         };
         let mut force_display = false;
         if let Some(conv) = &o.convert {
+            // the host may write to the scope
+            frame.scope_mut(h);
             let options = frame.options.take().unwrap_or_else(|| h.empty_options());
             let r = match &o.content {
                 OutContent::Field { field, .. } => h.get_field(
@@ -1080,7 +1230,7 @@ impl<H: Host> Renderer<'_, H> {
             frame.ctx.clone()
         };
         let slot = match c.body {
-            Some(b) => self.make_lazy(prog, b, &c.loc, &frame.scope, &frame.ctx),
+            Some(b) => self.make_lazy(prog, b, &c.loc, frame),
             None => h.str(""),
         };
         // `t_call_values = {0: body, name: value, ...}`, evaluated in the
@@ -1236,13 +1386,19 @@ impl<H: Host> Renderer<'_, H> {
         tmp: &mut Vec<AttrTmp<H>>,
         out: &mut String,
     ) -> Result<()> {
-        let h = self.h;
-        let is_const = |a: &Attr<H>| {
-            matches!(
-                a.value,
-                AttrSrc::Static(_) | AttrSrc::Format(Format::Const(_))
-            )
-        };
+        self.eval_attrs(attrs, scope, buf, tmp)?;
+        self.emit_attrs(attrs, buf, tmp, out)
+    }
+
+    /// The dynamic attribute values (like the dict assignments): the
+    /// format strings into `buf`, all of them into `tmp`.
+    fn eval_attrs(
+        &self,
+        attrs: &[Attr<H>],
+        scope: &H::Scope,
+        buf: &mut String,
+        tmp: &mut Vec<AttrTmp<H>>,
+    ) -> Result<()> {
         for a in attrs {
             match &a.value {
                 AttrSrc::Expr(e) => tmp.push(AttrTmp::Value(self.eval(e, scope)?)),
@@ -1253,6 +1409,25 @@ impl<H: Host> Renderer<'_, H> {
                 AttrSrc::Static(_) | AttrSrc::Format(Format::Const(_)) => {}
             }
         }
+        Ok(())
+    }
+
+    /// Write the attributes evaluated by [`Self::eval_attrs`] (like
+    /// `_render_attributes`).
+    fn emit_attrs(
+        &self,
+        attrs: &[Attr<H>],
+        buf: &mut String,
+        tmp: &[AttrTmp<H>],
+        out: &mut String,
+    ) -> Result<()> {
+        let h = self.h;
+        let is_const = |a: &Attr<H>| {
+            matches!(
+                a.value,
+                AttrSrc::Static(_) | AttrSrc::Format(Format::Const(_))
+            )
+        };
         let texts = buf.len();
         // `_post_processing_att`: neutralise javascript: URLs in href (the
         // check of a constant href was made when compiling).

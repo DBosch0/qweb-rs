@@ -80,5 +80,7 @@ mod format;
 mod text;
 
 pub use error::{Error, ErrorKind, Frame, Result};
-pub use host::{CompileOptions, Converted, Host, Loaded, LoopSource, Pairs, TemplateRef};
+pub use host::{
+    CompileHooks, CompileOptions, Converted, Host, Loaded, LoopSource, Pairs, TemplateRef,
+};
 pub use runtime::{Engine, Lazy};
