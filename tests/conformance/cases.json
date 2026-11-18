@@ -584,6 +584,20 @@
   "output": "012|01True"
  },
  {
+  "name": "foreach_negative_int",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"n\" t-as=\"i\">x</t><t t-out=\"i_size\"/>|<t t-foreach=\"m\" t-as=\"j\"><t t-out=\"j_last\"/></t><t t-out=\"j_size\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "n": -3,
+   "m": 0
+  },
+  "options": {},
+  "native": true,
+  "output": "-3|0"
+ },
+ {
   "name": "foreach_empty",
   "templates": {
    "main": "<t t-name=\"main\"><t t-foreach=\"[]\" t-as=\"i\">x</t><t t-foreach=\"None\" t-as=\"i\">y</t><t t-foreach=\"missing\" t-as=\"i\">z</t>|</t>"
@@ -726,6 +740,293 @@
   "options": {},
   "native": true,
   "output": "135"
+ },
+ {
+  "name": "foreach_vars_after",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"items\" t-as=\"i\"><t t-out=\"i\"/></t>|<t t-out=\"i\"/>,<t t-out=\"i_index\"/>,<t t-out=\"i_value\"/>,<t t-out=\"i_first\"/>,<t t-out=\"i_last\"/>,<t t-out=\"i_odd\"/>,<t t-out=\"i_even\"/>,<t t-out=\"i_parity\"/>,<t t-out=\"i_size\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "items": [
+    "a",
+    "b",
+    "c"
+   ]
+  },
+  "options": {},
+  "native": true,
+  "output": "abc|c,2,c,,True,0,True,even,3"
+ },
+ {
+  "name": "foreach_vars_after_even",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"items\" t-as=\"i\">.</t>|<t t-out=\"i\"/>,<t t-out=\"i_index\"/>,<t t-out=\"i_value\"/>,<t t-out=\"i_first\"/>,<t t-out=\"i_last\"/>,<t t-out=\"i_odd\"/>,<t t-out=\"i_even\"/>,<t t-out=\"i_parity\"/>,<t t-out=\"i_size\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "items": [
+    "a",
+    "b",
+    "c",
+    "d"
+   ]
+  },
+  "options": {},
+  "native": true,
+  "output": "....|d,3,d,,True,1,,odd,4"
+ },
+ {
+  "name": "foreach_vars_after_one",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"items\" t-as=\"i\"><t t-out=\"i_parity\"/></t>|<t t-out=\"i\"/>,<t t-out=\"i_index\"/>,<t t-out=\"i_value\"/>,<t t-out=\"i_first\"/>,<t t-out=\"i_last\"/>,<t t-out=\"i_odd\"/>,<t t-out=\"i_even\"/>,<t t-out=\"i_parity\"/>,<t t-out=\"i_size\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "items": [
+    "a"
+   ]
+  },
+  "options": {},
+  "native": true,
+  "output": "even|a,0,a,True,True,0,True,even,1"
+ },
+ {
+  "name": "foreach_vars_after_dict",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"d\" t-as=\"k\"><t t-out=\"k\"/></t>|<t t-out=\"k\"/>,<t t-out=\"k_index\"/>,<t t-out=\"k_value\"/>,<t t-out=\"k_first\"/>,<t t-out=\"k_last\"/>,<t t-out=\"k_odd\"/>,<t t-out=\"k_even\"/>,<t t-out=\"k_parity\"/>,<t t-out=\"k_size\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "d": {
+    "a": 1,
+    "b": 2,
+    "c": 3
+   }
+  },
+  "options": {},
+  "native": true,
+  "output": "abc|c,2,3,,True,0,True,even,3"
+ },
+ {
+  "name": "foreach_vars_after_int",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"4\" t-as=\"i\"/>|<t t-out=\"i\"/>,<t t-out=\"i_index\"/>,<t t-out=\"i_value\"/>,<t t-out=\"i_first\"/>,<t t-out=\"i_last\"/>,<t t-out=\"i_odd\"/>,<t t-out=\"i_even\"/>,<t t-out=\"i_parity\"/>,<t t-out=\"i_size\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "|3,3,3,,True,1,,odd,4"
+ },
+ {
+  "name": "foreach_vars_after_iter",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"reversed(items)\" t-as=\"i\"><t t-out=\"i_first\"/></t>|<t t-out=\"i\"/>,<t t-out=\"i_index\"/>,<t t-out=\"i_value\"/>,<t t-out=\"i_first\"/>,<t t-out=\"i_last\"/>,<t t-out=\"i_odd\"/>,<t t-out=\"i_even\"/>,<t t-out=\"i_parity\"/>,<t t-out=\"i_size\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "items": [
+    1,
+    2,
+    3
+   ]
+  },
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "KeyError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "foreach_vars_some",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"items\" t-as=\"i\"><b t-if=\"i_odd\" t-out=\"i\"/><i t-if=\"i_last\" t-att-n=\"i_index\">last</i></t>|<t t-out=\"i\"/>,<t t-out=\"i_index\"/>,<t t-out=\"i_value\"/>,<t t-out=\"i_first\"/>,<t t-out=\"i_last\"/>,<t t-out=\"i_odd\"/>,<t t-out=\"i_even\"/>,<t t-out=\"i_parity\"/>,<t t-out=\"i_size\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "items": [
+    5,
+    6,
+    7,
+    8,
+    9
+   ]
+  },
+  "options": {},
+  "native": true,
+  "output": "<b>6</b><b>8</b><i n=\"4\">last</i>|9,4,9,,True,0,True,even,5"
+ },
+ {
+  "name": "foreach_vars_call_after",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"[4, 5, 6]\" t-as=\"i\"><t t-out=\"i\"/></t><t t-call=\"sub\"/></t>",
+   "sub": "<t t-name=\"sub\">|<t t-out=\"i\"/>,<t t-out=\"i_index\"/>,<t t-out=\"i_value\"/>,<t t-out=\"i_first\"/>,<t t-out=\"i_last\"/>,<t t-out=\"i_odd\"/>,<t t-out=\"i_even\"/>,<t t-out=\"i_parity\"/>,<t t-out=\"i_size\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "456|6,2,6,,True,0,True,even,3"
+ },
+ {
+  "name": "foreach_vars_call_inside",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"[4, 5, 6]\" t-as=\"i\"><t t-call=\"sub\"/></t></t>",
+   "sub": "<t t-name=\"sub\">|<t t-out=\"i\"/>,<t t-out=\"i_index\"/>,<t t-out=\"i_value\"/>,<t t-out=\"i_first\"/>,<t t-out=\"i_last\"/>,<t t-out=\"i_odd\"/>,<t t-out=\"i_even\"/>,<t t-out=\"i_parity\"/>,<t t-out=\"i_size\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "|4,0,4,True,,0,True,even,3|5,1,5,,,1,,odd,3|6,2,6,,True,0,True,even,3"
+ },
+ {
+  "name": "foreach_vars_lazy_inside",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"[4, 5, 6]\" t-as=\"i\"><t t-set=\"c\">(<t t-out=\"i\"/>,<t t-out=\"i_index\"/>,<t t-out=\"i_value\"/>,<t t-out=\"i_first\"/>,<t t-out=\"i_last\"/>,<t t-out=\"i_odd\"/>,<t t-out=\"i_even\"/>,<t t-out=\"i_parity\"/>,<t t-out=\"i_size\"/>)</t></t><t t-out=\"c\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "(6,2,6,,True,0,True,even,3)"
+ },
+ {
+  "name": "foreach_vars_set_inside",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"[4, 5, 6]\" t-as=\"i\"><t t-set=\"i_index\" t-value=\"9\"/><t t-set=\"i_parity\" t-valuef=\"p\"/><t t-out=\"i\"/></t>|<t t-out=\"i\"/>,<t t-out=\"i_index\"/>,<t t-out=\"i_value\"/>,<t t-out=\"i_first\"/>,<t t-out=\"i_last\"/>,<t t-out=\"i_odd\"/>,<t t-out=\"i_even\"/>,<t t-out=\"i_parity\"/>,<t t-out=\"i_size\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "456|6,9,6,,True,0,True,p,3"
+ },
+ {
+  "name": "foreach_vars_update_inside",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"[4, 5, 6]\" t-as=\"i\"><t t-set=\"{'i_odd': 'o'}\"/><t t-out=\"i\"/></t>|<t t-out=\"i\"/>,<t t-out=\"i_index\"/>,<t t-out=\"i_value\"/>,<t t-out=\"i_first\"/>,<t t-out=\"i_last\"/>,<t t-out=\"i_odd\"/>,<t t-out=\"i_even\"/>,<t t-out=\"i_parity\"/>,<t t-out=\"i_size\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "456|6,2,6,,True,o,True,even,3"
+ },
+ {
+  "name": "foreach_vars_inner_loop_writes",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"[4, 5, 6]\" t-as=\"i\"><t t-foreach=\"'xy'\" t-as=\"i_value\"><t t-out=\"i\"/></t></t>|<t t-out=\"i\"/>,<t t-out=\"i_index\"/>,<t t-out=\"i_value\"/>,<t t-out=\"i_first\"/>,<t t-out=\"i_last\"/>,<t t-out=\"i_odd\"/>,<t t-out=\"i_even\"/>,<t t-out=\"i_parity\"/>,<t t-out=\"i_size\"/>|<t t-out=\"i_value\"/>,<t t-out=\"i_value_index\"/>,<t t-out=\"i_value_value\"/>,<t t-out=\"i_value_first\"/>,<t t-out=\"i_value_last\"/>,<t t-out=\"i_value_odd\"/>,<t t-out=\"i_value_even\"/>,<t t-out=\"i_value_parity\"/>,<t t-out=\"i_value_size\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "445566|6,2,y,,True,0,True,even,3|y,1,y,,True,1,,odd,2"
+ },
+ {
+  "name": "foreach_vars_prefix_names",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"[4, 5, 6]\" t-as=\"order\"><t t-foreach=\"'xy'\" t-as=\"order_line\"><t t-out=\"order_line\"/></t></t>|<t t-out=\"order\"/>,<t t-out=\"order_index\"/>,<t t-out=\"order_value\"/>,<t t-out=\"order_first\"/>,<t t-out=\"order_last\"/>,<t t-out=\"order_odd\"/>,<t t-out=\"order_even\"/>,<t t-out=\"order_parity\"/>,<t t-out=\"order_size\"/>|<t t-out=\"order_line\"/>,<t t-out=\"order_line_index\"/>,<t t-out=\"order_line_value\"/>,<t t-out=\"order_line_first\"/>,<t t-out=\"order_line_last\"/>,<t t-out=\"order_line_odd\"/>,<t t-out=\"order_line_even\"/>,<t t-out=\"order_line_parity\"/>,<t t-out=\"order_line_size\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "xyxyxy|6,2,6,,True,0,True,even,3|y,1,y,,True,1,,odd,2"
+ },
+ {
+  "name": "foreach_vars_nested_read",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"[4, 5, 6]\" t-as=\"i\"><t t-foreach=\"'xy'\" t-as=\"j\"><t t-out=\"i_index\"/><t t-out=\"j_last\"/></t></t>|<t t-out=\"i\"/>,<t t-out=\"i_index\"/>,<t t-out=\"i_value\"/>,<t t-out=\"i_first\"/>,<t t-out=\"i_last\"/>,<t t-out=\"i_odd\"/>,<t t-out=\"i_even\"/>,<t t-out=\"i_parity\"/>,<t t-out=\"i_size\"/>|<t t-out=\"j\"/>,<t t-out=\"j_index\"/>,<t t-out=\"j_value\"/>,<t t-out=\"j_first\"/>,<t t-out=\"j_last\"/>,<t t-out=\"j_odd\"/>,<t t-out=\"j_even\"/>,<t t-out=\"j_parity\"/>,<t t-out=\"j_size\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "00True11True22True|6,2,6,,True,0,True,even,3|y,1,y,,True,1,,odd,2"
+ },
+ {
+  "name": "foreach_vars_same_name",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"[4, 5, 6]\" t-as=\"i\"><t t-foreach=\"'xy'\" t-as=\"i\"><t t-out=\"i\"/></t><t t-out=\"i_index\"/></t>|<t t-out=\"i\"/>,<t t-out=\"i_index\"/>,<t t-out=\"i_value\"/>,<t t-out=\"i_first\"/>,<t t-out=\"i_last\"/>,<t t-out=\"i_odd\"/>,<t t-out=\"i_even\"/>,<t t-out=\"i_parity\"/>,<t t-out=\"i_size\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "xy1xy1xy1|y,1,y,,True,1,,odd,2"
+ },
+ {
+  "name": "foreach_vars_twice",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"[4, 5, 6]\" t-as=\"i\">.</t><t t-foreach=\"[7]\" t-as=\"i\">.</t>|<t t-out=\"i\"/>,<t t-out=\"i_index\"/>,<t t-out=\"i_value\"/>,<t t-out=\"i_first\"/>,<t t-out=\"i_last\"/>,<t t-out=\"i_odd\"/>,<t t-out=\"i_even\"/>,<t t-out=\"i_parity\"/>,<t t-out=\"i_size\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "....|7,0,7,True,True,0,True,even,1"
+ },
+ {
+  "name": "foreach_vars_error",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"[2, 1, 0]\" t-as=\"i\"><t t-out=\"4 / i\"/></t></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "ZeroDivisionError",
+  "message": "Error while rendering the template:"
+ },
+ {
+  "name": "foreach_vars_unpack_error",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"d\" t-as=\"k\"><t t-out=\"k\"/></t><t t-foreach=\"pairs\" t-as=\"k\"><t t-out=\"k\"/></t></t>"
+  },
+  "main": "main",
+  "values": {
+   "d": {
+    "a": 1
+   },
+   "pairs": [
+    [
+     1,
+     2
+    ],
+    [
+     3
+    ]
+   ]
+  },
+  "options": {},
+  "native": true,
+  "output": "a[1, 2][3]"
+ },
+ {
+  "name": "foreach_attrs_shared",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-foreach=\"[1, 2]\" t-as=\"i\"><br t-out=\"i\"/><span t-out=\"None\" data-a=\"v\"/><b t-foreach=\"[1]\" t-as=\"k\"/></t></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<br/>1<b></b><br/>2<b></b>"
+ },
+ {
+  "name": "foreach_attrs_leak",
+  "templates": {
+   "main": "<t t-name=\"main\"><span t-out=\"None\" data-a=\"v\"/><t t-foreach=\"[1, 2]\" t-as=\"i\"><br t-out=\"i\"/></t><t t-foreach=\"[]\" t-as=\"i\"/><hr t-out=\"1\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "<br data-a=\"v\"/>1<br data-a=\"v\"/>2<hr/>1"
  },
  {
   "name": "set_value",
@@ -1142,6 +1443,124 @@
   "output": "<a href=\"\"></a><a href=\"\"></a><a href=\"\"></a><a href=\"javascript:history.back()\"></a><a href=\"javascript:window.history.back()\"></a><a href=\"/ok\"></a><a href=\"\"></a><a href=\"\"></a><a href=\"\"></a>"
  },
  {
+  "name": "att_direct_mix",
+  "templates": {
+   "main": "<t t-name=\"main\"><a class=\"s &amp; t\" t-att-href=\"u\" t-attf-title=\"x{{ n }}y&lt;{{ u }}\" t-att-data-n=\"n\" t-att-data-f=\"f\" t-att-data-z=\"z\" t-att-data-e=\"e\" t-att-data-m=\"m\" t-att-data-l=\"l\" t-attf-data-c=\"const &amp; &quot;\" id=\"i\">x</a></t>"
+  },
+  "main": "main",
+  "values": {
+   "u": "/a?b=1&c=\"2\"",
+   "n": 3,
+   "f": false,
+   "z": 0,
+   "e": "",
+   "m": {
+    "$markup": "<b>&amp;</b>"
+   },
+   "l": [
+    1,
+    "a"
+   ]
+  },
+  "options": {},
+  "native": true,
+  "output": "<a class=\"s &amp; t\" id=\"i\" href=\"/a?b=1&amp;c=&#34;2&#34;\" title=\"x3y&lt;/a?b=1&amp;c=&#34;2&#34;\" data-n=\"3\" data-e=\"\" data-m=\"&lt;b&gt;&amp;amp;&lt;/b&gt;\" data-l=\"[1, &#39;a&#39;]\" data-c=\"const &amp; &#34;\">x</a>"
+ },
+ {
+  "name": "att_direct_numbers",
+  "templates": {
+   "main": "<t t-name=\"main\"><i t-foreach=\"xs\" t-as=\"x\" t-att-a=\"x\" t-attf-b=\"{{ x }}/{{ x_index }}\" t-out=\"x\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "xs": [
+    0,
+    1,
+    -7,
+    123456789012,
+    1.5,
+    -0.25,
+    100.0,
+    1e+16,
+    1e-05,
+    0.1,
+    0.3333333333333333,
+    2.675,
+    true,
+    false,
+    null,
+    938072170685064.2,
+    9725986424039.062,
+    {
+     "$float": 1e+22
+    }
+   ]
+  },
+  "options": {},
+  "native": true,
+  "output": "<i b=\"0/0\">0</i><i a=\"1\" b=\"1/1\">1</i><i a=\"-7\" b=\"-7/2\">-7</i><i a=\"123456789012\" b=\"123456789012/3\">123456789012</i><i a=\"1.5\" b=\"1.5/4\">1.5</i><i a=\"-0.25\" b=\"-0.25/5\">-0.25</i><i a=\"100.0\" b=\"100.0/6\">100.0</i><i a=\"1e+16\" b=\"1e+16/7\">1e+16</i><i a=\"1e-05\" b=\"1e-05/8\">1e-05</i><i a=\"0.1\" b=\"0.1/9\">0.1</i><i a=\"0.3333333333333333\" b=\"0.3333333333333333/10\">0.3333333333333333</i><i a=\"2.675\" b=\"2.675/11\">2.675</i><i a=\"True\" b=\"True/12\">True</i><i a=\"938072170685064.2\" b=\"938072170685064.2/15\">938072170685064.2</i><i a=\"9725986424039.062\" b=\"9725986424039.062/16\">9725986424039.062</i><i a=\"1e+22\" b=\"1e+22/17\">1e+22</i>"
+ },
+ {
+  "name": "att_direct_href",
+  "templates": {
+   "main": "<t t-name=\"main\"><a href=\"javascript:a\" class=\"c\" t-att-id=\"i\"/><a t-att-href=\"u\" class=\"c\"/><a t-attf-href=\"java{{ s }}:x\" t-att-id=\"i\"/><a t-attf-href=\"javascript:c\" id=\"k\"/><a t-att-href=\"m\" t-attf-id=\"{{ i }}\"/><a t-att-href=\"ok\" t-att-id=\"i\"/><a t-attf-href=\"/x/{{ i }}\" t-attf-id=\"a{{ i }}\" t-attf-class=\"b{{ i }}\"/><a t-att-href=\"n\" id=\"k\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "u": " JavaScript:alert(1)",
+   "s": "script",
+   "m": {
+    "$markup": "javascript:m"
+   },
+   "ok": "/ok?a=1&b=2",
+   "i": 7,
+   "n": null
+  },
+  "options": {},
+  "native": true,
+  "output": "<a href=\"\" class=\"c\" id=\"7\"></a><a class=\"c\" href=\"\"></a><a href=\"\" id=\"7\"></a><a id=\"k\" href=\"\"></a><a href=\"\" id=\"7\"></a><a href=\"/ok?a=1&amp;b=2\" id=\"7\"></a><a href=\"/x/7\" id=\"a7\" class=\"b7\"></a><a id=\"k\"></a>"
+ },
+ {
+  "name": "att_direct_same_name",
+  "templates": {
+   "main": "<t t-name=\"main\"><div class=\"a\" t-att-class=\"c\" id=\"i\"/><div t-att-class=\"c\" t-attf-class=\"x{{ c }}\"/><div class=\"a\" t-attf-class=\"x{{ c }}\" t-att-class=\"n\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "c": "dyn",
+   "n": null
+  },
+  "options": {},
+  "native": true,
+  "output": "<div class=\"dyn\" id=\"i\"></div><div class=\"xdyn\"></div><div></div>"
+ },
+ {
+  "name": "att_direct_xmlns",
+  "templates": {
+   "main": "<t t-name=\"main\"><svg xmlns=\"http://www.w3.org/2000/svg\" t-att-width=\"w\"><g t-att-id=\"w\"/></svg></t>"
+  },
+  "main": "main",
+  "values": {
+   "w": 10
+  },
+  "options": {},
+  "native": true,
+  "output": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\"><g id=\"10\"></g></svg>"
+ },
+ {
+  "name": "att_direct_error",
+  "templates": {
+   "main": "<t t-name=\"main\"><div t-att-a=\"1\" t-att-b=\"missing.attr\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "error": "QWebError",
+  "cause": "KeyError",
+  "message": "Error while rendering the template:"
+ },
+ {
   "name": "att_on_t",
   "templates": {
    "main": "<t t-name=\"main\"><t t-att-x=\"1\">a</t><t class=\"c\" t-att-y=\"2\" t-out=\"'b'\"/></t>"
@@ -1435,6 +1854,32 @@
   "options": {},
   "native": true,
   "output": "[1][2]"
+ },
+ {
+  "name": "call_values_order",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-set=\"a\" t-value=\"10\"/><t t-call=\"sub\" a=\"a + 1\" b.f=\"{{ a }}-{{ b }}\" c=\"a\"><t t-set=\"a\" t-value=\"a + 5\"/>[<t t-out=\"a\"/>]</t>|<t t-out=\"a\"/>|<t t-out=\"b\"/></t>",
+   "sub": "<t t-name=\"sub\"><t t-out=\"a\"/>,<t t-out=\"b\"/>,<t t-out=\"c\"/>,<t t-out=\"0\"/>,<t t-out=\"0\"/></t>"
+  },
+  "main": "main",
+  "values": {
+   "b": "B"
+  },
+  "options": {},
+  "native": true,
+  "output": "11,10-B,10,[15],[15]|10|B"
+ },
+ {
+  "name": "call_values_same_name",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-call=\"sub\" a=\"1\" a.f=\"two\"/><t t-call=\"sub\" t-args=\"{'a': 3}\" a=\"4\"/><t t-call=\"sub\" a=\"5\" t-args=\"[('a', 6), ('b', 7)]\"/></t>",
+   "sub": "<t t-name=\"sub\">(<t t-out=\"a\"/>,<t t-out=\"b\"/>)</t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": true,
+  "output": "(two,)(4,)(6,7)"
  },
  {
   "name": "call_percent_attr",
@@ -1767,6 +2212,17 @@
   "options": {},
   "native": true,
   "output": "0.1,1.0,100.0,1e+16,1.5e+16,1e-05,0.0001,123456789.123,0.3333333333333333,-2.5,1e+22,1.2345678901234567e+19,"
+ },
+ {
+  "name": "expr_big_int",
+  "templates": {
+   "main": "<t t-name=\"main\"><t t-out=\"2 ** 70\"/>|<t t-out=\"-(2 ** 63)\"/>|<i t-att-a=\"2 ** 64\" t-attf-b=\"{{ -(2 ** 63) - 1 }}/{{ 2 ** 63 - 1 }}\" t-out=\"2 ** 63\"/></t>"
+  },
+  "main": "main",
+  "values": {},
+  "options": {},
+  "native": false,
+  "output": "1180591620717411303424|-9223372036854775808|<i a=\"18446744073709551616\" b=\"-9223372036854775809/9223372036854775807\">9223372036854775808</i>"
  },
  {
   "name": "expr_comprehension",

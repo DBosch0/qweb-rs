@@ -160,6 +160,7 @@ case('foreach_vars', '''<t t-name="main"><t t-foreach="items" t-as="i">
 </t></t>''', {'items': ['a', 'b', 'c']})
 case('foreach_dict', '<t t-name="main"><t t-foreach="d" t-as="k"><t t-out="k"/>=<t t-out="k_value"/>;</t></t>', {'d': {'a': 1, 'b': 2}})
 case('foreach_int', '<t t-name="main"><t t-foreach="3" t-as="i"><t t-out="i"/></t>|<t t-foreach="n" t-as="j"><t t-out="j"/><t t-out="j_last"/></t></t>', {'n': 2})
+case('foreach_negative_int', '<t t-name="main"><t t-foreach="n" t-as="i">x</t><t t-out="i_size"/>|<t t-foreach="m" t-as="j"><t t-out="j_last"/></t><t t-out="j_size"/></t>', {'n': -3, 'm': 0})
 case('foreach_empty', '<t t-name="main"><t t-foreach="[]" t-as="i">x</t><t t-foreach="None" t-as="i">y</t><t t-foreach="missing" t-as="i">z</t>|</t>')
 case('foreach_leak', '<t t-name="main"><t t-foreach="[1,2]" t-as="i"/><t t-out="i"/>|<t t-out="i_index"/></t>')
 case('foreach_element', '<t t-name="main"><ul><li t-foreach="items" t-as="item" t-att-class="item_parity" t-out="item"/></ul></t>', {'items': ['a', 'b', 'c']})
@@ -183,6 +184,39 @@ case('foreach_bad_as', '<t t-name="main"><t t-foreach="[1]" t-as="a-b"/></t>')
 case('foreach_missing_as', '<t t-name="main"><t t-foreach="[1]"/></t>')
 case('as_without_foreach', '<t t-name="main"><t t-as="x"/></t>')
 case('foreach_if', '<t t-name="main"><t t-foreach="range(6)" t-as="i" t-if="i % 2"><t t-out="i"/></t></t>')
+
+# The loop variables the body does not read are assigned at the first
+# iteration and when the loop ends: what follows the loop sees all of them.
+LOOP_SUFFIXES = ['', '_index', '_value', '_first', '_last', '_odd', '_even', '_parity', '_size']
+all_vars = lambda var: ','.join(f'<t t-out="{var}{suffix}"/>' for suffix in LOOP_SUFFIXES)  # noqa: E731
+case('foreach_vars_after', '<t t-name="main"><t t-foreach="items" t-as="i"><t t-out="i"/></t>|' + all_vars('i') + '</t>', {'items': ['a', 'b', 'c']})
+case('foreach_vars_after_even', '<t t-name="main"><t t-foreach="items" t-as="i">.</t>|' + all_vars('i') + '</t>', {'items': ['a', 'b', 'c', 'd']})
+case('foreach_vars_after_one', '<t t-name="main"><t t-foreach="items" t-as="i"><t t-out="i_parity"/></t>|' + all_vars('i') + '</t>', {'items': ['a']})
+case('foreach_vars_after_dict', '<t t-name="main"><t t-foreach="d" t-as="k"><t t-out="k"/></t>|' + all_vars('k') + '</t>', {'d': {'a': 1, 'b': 2, 'c': 3}})
+case('foreach_vars_after_int', '<t t-name="main"><t t-foreach="4" t-as="i"/>|' + all_vars('i') + '</t>')
+case('foreach_vars_after_iter', '<t t-name="main"><t t-foreach="reversed(items)" t-as="i"><t t-out="i_first"/></t>|' + all_vars('i') + '</t>', {'items': [1, 2, 3]})
+case('foreach_vars_some', '<t t-name="main"><t t-foreach="items" t-as="i"><b t-if="i_odd" t-out="i"/><i t-if="i_last" t-att-n="i_index">last</i></t>|' + all_vars('i') + '</t>', {'items': [5, 6, 7, 8, 9]})
+case('foreach_vars_call_after', {
+    'main': '<t t-name="main"><t t-foreach="[4, 5, 6]" t-as="i"><t t-out="i"/></t><t t-call="sub"/></t>',
+    'sub': '<t t-name="sub">|' + all_vars('i') + '</t>',
+})
+case('foreach_vars_call_inside', {
+    'main': '<t t-name="main"><t t-foreach="[4, 5, 6]" t-as="i"><t t-call="sub"/></t></t>',
+    'sub': '<t t-name="sub">|' + all_vars('i') + '</t>',
+})
+case('foreach_vars_lazy_inside', '<t t-name="main"><t t-foreach="[4, 5, 6]" t-as="i"><t t-set="c">(' + all_vars('i') + ')</t></t><t t-out="c"/></t>')
+case('foreach_vars_set_inside', '<t t-name="main"><t t-foreach="[4, 5, 6]" t-as="i"><t t-set="i_index" t-value="9"/><t t-set="i_parity" t-valuef="p"/><t t-out="i"/></t>|' + all_vars('i') + '</t>')
+case('foreach_vars_update_inside', '<t t-name="main"><t t-foreach="[4, 5, 6]" t-as="i"><t t-set="{\'i_odd\': \'o\'}"/><t t-out="i"/></t>|' + all_vars('i') + '</t>')
+case('foreach_vars_inner_loop_writes', '<t t-name="main"><t t-foreach="[4, 5, 6]" t-as="i"><t t-foreach="\'xy\'" t-as="i_value"><t t-out="i"/></t></t>|' + all_vars('i') + '|' + all_vars('i_value') + '</t>')
+case('foreach_vars_prefix_names', '<t t-name="main"><t t-foreach="[4, 5, 6]" t-as="order"><t t-foreach="\'xy\'" t-as="order_line"><t t-out="order_line"/></t></t>|' + all_vars('order') + '|' + all_vars('order_line') + '</t>')
+case('foreach_vars_nested_read', '<t t-name="main"><t t-foreach="[4, 5, 6]" t-as="i"><t t-foreach="\'xy\'" t-as="j"><t t-out="i_index"/><t t-out="j_last"/></t></t>|' + all_vars('i') + '|' + all_vars('j') + '</t>')
+case('foreach_vars_same_name', '<t t-name="main"><t t-foreach="[4, 5, 6]" t-as="i"><t t-foreach="\'xy\'" t-as="i"><t t-out="i"/></t><t t-out="i_index"/></t>|' + all_vars('i') + '</t>')
+case('foreach_vars_twice', '<t t-name="main"><t t-foreach="[4, 5, 6]" t-as="i">.</t><t t-foreach="[7]" t-as="i">.</t>|' + all_vars('i') + '</t>')
+case('foreach_vars_error', '<t t-name="main"><t t-foreach="[2, 1, 0]" t-as="i"><t t-out="4 / i"/></t></t>')
+case('foreach_vars_unpack_error', '<t t-name="main"><t t-foreach="d" t-as="k"><t t-out="k"/></t><t t-foreach="pairs" t-as="k"><t t-out="k"/></t></t>', {'d': {'a': 1}, 'pairs': [[1, 2], [3]]})
+# `foreach_attrs` is one variable for all the loops of a template
+case('foreach_attrs_shared', '<t t-name="main"><t t-foreach="[1, 2]" t-as="i"><br t-out="i"/><span t-out="None" data-a="v"/><b t-foreach="[1]" t-as="k"/></t></t>')
+case('foreach_attrs_leak', '<t t-name="main"><span t-out="None" data-a="v"/><t t-foreach="[1, 2]" t-as="i"><br t-out="i"/></t><t t-foreach="[]" t-as="i"/><hr t-out="1"/></t>')
 
 # --------------------------------------------------------------------------
 # t-set
@@ -252,6 +286,16 @@ case('attf_nested_braces', '<t t-name="main"><div t-attf-x="{{ {\'a\': 1}[\'a\']
 case('att_href_js', '<t t-name="main"><a t-att-href="u">x</a><a t-attf-href="{{u}}">y</a><a href="javascript:alert(2)">static</a></t>', {'u': 'javascript:alert(1)'})
 case('att_href_js_variants', '<t t-name="main"><t t-foreach="urls" t-as="u"><a t-att-href="u"/></t></t>',
      {'urls': ['JaVaScRiPt:x', ' java\tscript:x', 'java%73cript:x', 'javascript:history.back()', 'javascript:window.history.back()', '/ok', '', 'javascript:history.back();x', 'jav+ascript:x']})
+# attributes set and rendered in a row (no dict), all value kinds
+case('att_direct_mix', '<t t-name="main"><a class="s &amp; t" t-att-href="u" t-attf-title="x{{ n }}y&lt;{{ u }}" t-att-data-n="n" t-att-data-f="f" t-att-data-z="z" t-att-data-e="e" t-att-data-m="m" t-att-data-l="l" t-attf-data-c="const &amp; &quot;" id="i">x</a></t>',
+     {'u': '/a?b=1&c="2"', 'n': 3, 'f': False, 'z': 0, 'e': '', 'm': M('<b>&amp;</b>'), 'l': [1, 'a']})
+case('att_direct_numbers', '<t t-name="main"><i t-foreach="xs" t-as="x" t-att-a="x" t-attf-b="{{ x }}/{{ x_index }}" t-out="x"/></t>',
+     {'xs': [0, 1, -7, 123456789012, 1.5, -0.25, 100.0, 1e16, 1e-5, 0.1, 1/3, 2.675, True, False, None, 938072170685064.25, 9725986424039.0625, {'$float': 1e22}]})
+case('att_direct_href', '<t t-name="main"><a href="javascript:a" class="c" t-att-id="i"/><a t-att-href="u" class="c"/><a t-attf-href="java{{ s }}:x" t-att-id="i"/><a t-attf-href="javascript:c" id="k"/><a t-att-href="m" t-attf-id="{{ i }}"/><a t-att-href="ok" t-att-id="i"/><a t-attf-href="/x/{{ i }}" t-attf-id="a{{ i }}" t-attf-class="b{{ i }}"/><a t-att-href="n" id="k"/></t>',
+     {'u': ' JavaScript:alert(1)', 's': 'script', 'm': M('javascript:m'), 'ok': '/ok?a=1&b=2', 'i': 7, 'n': None})
+case('att_direct_same_name', '<t t-name="main"><div class="a" t-att-class="c" id="i"/><div t-att-class="c" t-attf-class="x{{ c }}"/><div class="a" t-attf-class="x{{ c }}" t-att-class="n"/></t>', {'c': 'dyn', 'n': None})
+case('att_direct_xmlns', '<t t-name="main"><svg xmlns="http://www.w3.org/2000/svg" t-att-width="w"><g t-att-id="w"/></svg></t>', {'w': 10})
+case('att_direct_error', '<t t-name="main"><div t-att-a="1" t-att-b="missing.attr"/></t>')
 case('att_on_t', '<t t-name="main"><t t-att-x="1">a</t><t class="c" t-att-y="2" t-out="\'b\'"/></t>')
 case('att_root_t', '<t t-name="main" t-att-x="1">a</t>')
 case('att_translate', '<t t-name="main"><div t-attf-title.translate="T {{1}}" t-att-x="1"/></t>')
@@ -334,6 +378,14 @@ case('call_foreach', {
     'main': '<t t-name="main"><t t-foreach="[1, 2]" t-as="i"><t t-call="sub"/></t></t>',
     'sub': '<t t-name="sub">[<t t-out="i"/>]</t>',
 })
+case('call_values_order', {
+    'main': '<t t-name="main"><t t-set="a" t-value="10"/><t t-call="sub" a="a + 1" b.f="{{ a }}-{{ b }}" c="a"><t t-set="a" t-value="a + 5"/>[<t t-out="a"/>]</t>|<t t-out="a"/>|<t t-out="b"/></t>',
+    'sub': '<t t-name="sub"><t t-out="a"/>,<t t-out="b"/>,<t t-out="c"/>,<t t-out="0"/>,<t t-out="0"/></t>',
+}, {'b': 'B'})
+case('call_values_same_name', {
+    'main': '<t t-name="main"><t t-call="sub" a="1" a.f="two"/><t t-call="sub" t-args="{\'a\': 3}" a="4"/><t t-call="sub" a="5" t-args="[(\'a\', 6), (\'b\', 7)]"/></t>',
+    'sub': '<t t-name="sub">(<t t-out="a"/>,<t t-out="b"/>)</t>',
+})
 case('call_percent_attr', {
     'main': '<t t-name="main"><t t-call="sub" a.f="100%"/></t>',
     'sub': '<t t-name="sub"><t t-out="a"/></t>',
@@ -377,6 +429,7 @@ case('expr_builtin_shadow', '<t t-name="main"><t t-out="len(\'ab\')"/></t>', {'l
 case('expr_multiline', '<t t-name="main"><t t-out="a and\n    b"/></t>', {'a': 1, 'b': 2})
 case('expr_float_repr', '<t t-name="main"><t t-foreach="fs" t-as="f"><t t-out="f"/>,</t></t>',
      {'fs': [0.1, 1.0, 100.0, 1e16, 1.5e16, 1e-5, 0.0001, 123456789.123, 1/3, -2.5, {'$float': 1e22}, 12345678901234567890.0]})
+case('expr_big_int', '<t t-name="main"><t t-out="2 ** 70"/>|<t t-out="-(2 ** 63)"/>|<i t-att-a="2 ** 64" t-attf-b="{{ -(2 ** 63) - 1 }}/{{ 2 ** 63 - 1 }}" t-out="2 ** 63"/></t>', native=False)
 case('expr_comprehension', '<t t-name="main"><t t-out="[x * 2 for x in items]"/></t>', {'items': [1, 2]}, native=False)
 case('expr_lambda', '<t t-name="main"><t t-out="sorted(items, key=lambda x: -x)"/></t>', {'items': [1, 3, 2]}, native=False)
 case('expr_fstring', '<t t-name="main"><t t-out="f\'{a}-{b!r}\'"/></t>', {'a': 1, 'b': 'x'}, native=False)

@@ -116,8 +116,9 @@ pub struct CompileOptions {
 pub struct LoopSource<I> {
     /// The items.
     pub iter: I,
-    /// Size when the value is `Sized` (or an int).
-    pub size: Option<usize>,
+    /// Size when the value is `Sized` (or an int). An int is its own size,
+    /// even negative (`x_size` is then that int and the loop is empty).
+    pub size: Option<i64>,
     /// The value is a `Mapping`: items are `(key, value)` pairs.
     pub mapping: bool,
 }
@@ -302,6 +303,15 @@ pub trait Host: Sized + Send + Sync + 'static {
     /// `str(escape(v))`: markup (`__html__`) unescaped, everything else
     /// converted with `str()` and escaped.
     fn write_escaped(&self, v: &Self::Value, out: &mut String) -> Result<()>;
+
+    /// `escape(str(v))` where the text is always escaped, markup included
+    /// (attribute values). Override it to skip the intermediate string.
+    fn write_str_escaped(&self, v: &Self::Value, out: &mut String) -> Result<()> {
+        let mut s = String::new();
+        self.write_str(v, &mut s)?;
+        crate::escape::escape_into(out, &s);
+        Ok(())
+    }
 
     // ----- t-foreach / t-att -----------------------------------------------
     /// Iterate a `t-foreach` value: a mapping iterates its items, an int

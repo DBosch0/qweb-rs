@@ -70,6 +70,7 @@ pub mod escape;
 pub mod expr;
 pub mod host;
 pub mod ir;
+pub mod num;
 pub mod runtime;
 pub mod url;
 pub mod xml;

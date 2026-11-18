@@ -14,12 +14,13 @@ use std::sync::{Arc, atomic::AtomicUsize};
 use std::{borrow, mem};
 
 use crate::error::{Error, ErrorKind, Result};
+use crate::escape::escape_into;
 use crate::expr::{self, Expr, ParseError};
 use crate::format::{FormatPart as FP, split_format};
 use crate::host::{CompileHooks, CompileOptions, Host, TemplateRef};
 use crate::ir::{
-    Assets, AttrSrc, Call, CallArg, CallTarget, Convert, Ex, Foreach, Format, FormatPart, Loc,
-    LocSource, Otherwise, Out, OutContent, Program, Stmt,
+    Assets, Attr, AttrSrc, Call, CallArg, CallTarget, Convert, Ex, Foreach, Format, FormatPart,
+    Loc, LocSource, LoopVars, Otherwise, Out, OutContent, Program, Stmt,
 };
 use crate::text;
 use crate::xml::{self, Document, NodeId, NodeKind, NsMap, XStr};
@@ -301,6 +302,235 @@ pub struct Compiler<'a, H: Host> {
     /// A custom directive had mutable access to the tree: every location
     /// recorded from then on is built as text.
     edited: bool,
+    /// Variables assigned so far by the template, in compilation order
+    /// (see [`loop_vars_read`]).
+    assigned: Vec<Assigned>,
+}
+
+/// A template variable assignment.
+enum Assigned {
+    /// `t-set="name"`.
+    Var(XStr),
+    /// The variables of a `t-foreach` with `t-as="name"`.
+    Loop(XStr),
+}
+
+/// Suffixes of the variables of a `t-foreach` (`x`, `x_index`, ...).
+const LOOP_SUFFIXES: [&str; 9] = [
+    "", "_index", "_value", "_first", "_last", "_odd", "_even", "_parity", "_size",
+];
+
+/// The loop variable `name` is, for a `t-foreach` with `t-as="var"`: its
+/// suffix (empty for `var` itself).
+fn loop_suffix<'n>(name: &'n str, var: &str) -> Option<&'n str> {
+    let suffix = name.strip_prefix(var)?;
+    LOOP_SUFFIXES.contains(&suffix).then_some(suffix)
+}
+
+impl Assigned {
+    /// Whether the assignment writes a variable of the loop `t-as="var"`.
+    fn writes_loop_var(&self, var: &str) -> bool {
+        match self {
+            Assigned::Var(name) => loop_suffix(name, var).is_some(),
+            // `inner + s == var + s2` for two suffixes
+            Assigned::Loop(inner) => {
+                if let Some(rest) = inner.strip_prefix(var) {
+                    LOOP_SUFFIXES.iter().any(|s| {
+                        LOOP_SUFFIXES.iter().any(|s2| {
+                            s2.len() == rest.len() + s.len()
+                                && s2.starts_with(rest)
+                                && s2.ends_with(s)
+                        })
+                    })
+                } else if let Some(rest) = var.strip_prefix(inner.as_str()) {
+                    LOOP_SUFFIXES.iter().any(|s| {
+                        LOOP_SUFFIXES.iter().any(|s2| {
+                            s.len() == rest.len() + s2.len()
+                                && s.starts_with(rest)
+                                && s.ends_with(s2)
+                        })
+                    })
+                } else {
+                    false
+                }
+            }
+        }
+    }
+}
+
+/// The derived loop variables (of `t-as="var"`) that the statements `body`
+/// can read: the ones a `t-foreach` has to assign at every iteration.
+/// [`LoopVars::ALL`] when the body can see the whole scope: a `t-call`
+/// copies it, lazy content takes a snapshot of it, and the host receives it
+/// for opaque expressions, hooks, fields and widgets.
+fn loop_vars_read<H: Host>(body: &[Stmt<H>], var: &str) -> LoopVars {
+    let mut used = VarUse {
+        var,
+        vars: LoopVars::NONE,
+    };
+    used.stmts(body);
+    used.vars
+}
+
+struct VarUse<'a> {
+    var: &'a str,
+    vars: LoopVars,
+}
+
+impl VarUse<'_> {
+    fn all(&mut self) {
+        self.vars = LoopVars::ALL;
+    }
+
+    fn stmts<H: Host>(&mut self, stmts: &[Stmt<H>]) {
+        for stmt in stmts {
+            if self.vars == LoopVars::ALL {
+                return;
+            }
+            match stmt {
+                Stmt::Text(_)
+                | Stmt::AttrsInit
+                | Stmt::AttrsFlush { .. }
+                | Stmt::SetConst { .. }
+                | Stmt::Slot { .. } => {}
+                Stmt::If {
+                    cond, then, orelse, ..
+                } => {
+                    self.ex(cond);
+                    self.stmts(then);
+                    self.stmts(orelse);
+                }
+                Stmt::Groups { body, .. } => self.stmts(body),
+                Stmt::Foreach(f) => {
+                    if let Ok(e) = &f.source {
+                        self.ex(e);
+                    }
+                    self.stmts(&f.body);
+                }
+                Stmt::Set { value, .. } | Stmt::AttrUpdate { value, .. } => self.ex(value),
+                Stmt::SetFormat { fmt, .. } => self.format(fmt),
+                Stmt::Options { base, items, .. } => {
+                    if let Some(e) = base {
+                        self.ex(e);
+                    }
+                    for (_, e) in items {
+                        self.ex(e);
+                    }
+                }
+                Stmt::AttrSet { value, .. } => self.attr(value),
+                Stmt::Attrs { attrs, .. } => {
+                    for a in attrs {
+                        self.attr(&a.value);
+                    }
+                }
+                Stmt::Out(o) => {
+                    match (&o.content, &o.convert) {
+                        (OutContent::Expr(e), None) => self.ex(e),
+                        (OutContent::Slot, None) => {}
+                        // the host converts the value with the scope
+                        _ => self.all(),
+                    }
+                    self.stmts(&o.tag_open);
+                    self.stmts(&o.tag_close);
+                    if let Otherwise::Default(body) = &o.otherwise {
+                        self.stmts(body);
+                    }
+                }
+                // `values.update(...)` can assign any variable; the others
+                // give the scope away.
+                Stmt::SetUpdate { .. }
+                | Stmt::SetLazy { .. }
+                | Stmt::Call(_)
+                | Stmt::Assets(_)
+                | Stmt::Hook { .. } => self.all(),
+            }
+        }
+    }
+
+    fn attr<H: Host>(&mut self, value: &AttrSrc<H>) {
+        match value {
+            AttrSrc::Static(_) => {}
+            AttrSrc::Expr(e) => self.ex(e),
+            AttrSrc::Format(f) => self.format(f),
+        }
+    }
+
+    fn format<H: Host>(&mut self, f: &Format<H>) {
+        if let Format::Parts(parts) = f {
+            for p in parts {
+                if let FormatPart::Expr(e) = p {
+                    self.ex(e);
+                }
+            }
+        }
+    }
+
+    fn ex<H: Host>(&mut self, e: &Ex<H>) {
+        match e {
+            Ex::Const(_) | Ex::Unknown(_) => {}
+            Ex::Var { name, .. } => {
+                let var = match loop_suffix(name, self.var) {
+                    Some("_index") => LoopVars::INDEX,
+                    Some("_value") => LoopVars::VALUE,
+                    Some("_first") => LoopVars::FIRST,
+                    Some("_last") => LoopVars::LAST,
+                    Some("_odd") => LoopVars::ODD,
+                    Some("_even") => LoopVars::EVEN,
+                    Some("_parity") => LoopVars::PARITY,
+                    // `x` is always assigned, `x_size` before the loop
+                    _ => LoopVars::NONE,
+                };
+                self.vars = self.vars.union(var);
+            }
+            Ex::Attr(o, _) | Ex::Unary(_, o) | Ex::Not(o) => self.ex(o),
+            Ex::Item(a, b) | Ex::Bin(_, a, b) => {
+                self.ex(a);
+                self.ex(b);
+            }
+            Ex::Slice(l, u, s) => {
+                for e in [l, u, s].into_iter().flatten() {
+                    self.ex(e);
+                }
+            }
+            Ex::Call { func, args, kwargs } => {
+                self.ex(func);
+                for e in args {
+                    self.ex(e);
+                }
+                for (_, e) in kwargs {
+                    self.ex(e);
+                }
+            }
+            Ex::Cmp(first, rest) => {
+                self.ex(first);
+                for (_, e) in rest {
+                    self.ex(e);
+                }
+            }
+            Ex::And(items)
+            | Ex::Or(items)
+            | Ex::Tuple(items)
+            | Ex::List(items)
+            | Ex::Set(items) => {
+                for e in items {
+                    self.ex(e);
+                }
+            }
+            Ex::IfElse(c, t, o) => {
+                self.ex(c);
+                self.ex(t);
+                self.ex(o);
+            }
+            Ex::Dict(items) => {
+                for (k, v) in items {
+                    self.ex(k);
+                    self.ex(v);
+                }
+            }
+            // evaluated by the host, with the scope
+            Ex::Opaque(_) => self.all(),
+        }
+    }
 }
 
 /// Compiler interface given to custom directive handlers
@@ -517,6 +747,7 @@ impl<'a, H: Host> Compiler<'a, H> {
             loc_src: LocSource::new(source),
             changed,
             edited: false,
+            assigned: Vec::new(),
         };
         let root = c.doc.root;
         let ref_name = xmlid.or_else(|| c.doc.node(root).get("t-name").map(str::to_owned));
@@ -1061,6 +1292,7 @@ impl<'a, H: Host> Compiler<'a, H> {
                     .compile_directive(id, cx, d, iter)
                     .map_err(|e| self.located(e, id))?;
                 code.extend(c);
+                self.fuse_attrs(&mut code);
             }
         }
         // Unordered directives still present: Python re-dispatches the last
@@ -1173,6 +1405,98 @@ impl<'a, H: Host> Compiler<'a, H> {
         let loc = self.loc(id);
         self.doc.node_mut(id).set("t-consumed-options", "True");
         Ok(vec![Stmt::Options { base, items, loc }])
+    }
+
+    /// When `code` ends with the attributes of an element set and rendered
+    /// in a row (`attrs = {}`, `attrs[name] = value` with distinct names,
+    /// static text, `_render_attributes`), replace these statements by the
+    /// text and one [`Stmt::Attrs`], which needs no dict.
+    fn fuse_attrs(&self, code: &mut Code<H>) {
+        let Some(Stmt::AttrsFlush { .. }) = code.last() else {
+            return;
+        };
+        let flush = code.len() - 1;
+        let text = flush > 0 && matches!(code[flush - 1], Stmt::Text(_));
+        let end = flush - usize::from(text);
+        let mut start = end;
+        while start > 0 && matches!(code[start - 1], Stmt::AttrSet { .. }) {
+            start -= 1;
+        }
+        if start == end || start == 0 || !matches!(code[start - 1], Stmt::AttrsInit) {
+            return;
+        }
+        let distinct = code[start..end].iter().enumerate().all(|(i, a)| {
+            let Stmt::AttrSet { name, .. } = a else {
+                return false;
+            };
+            !code[start..start + i]
+                .iter()
+                .any(|b| matches!(b, Stmt::AttrSet { name: other, .. } if other == name))
+        });
+        if !distinct {
+            return;
+        }
+        // The text of the constant values (`None`: not a constant).
+        let mut consts = Vec::with_capacity(end - start);
+        for a in &code[start..end] {
+            consts.push(match a {
+                Stmt::AttrSet {
+                    value: AttrSrc::Static(s),
+                    ..
+                } => Some(s.to_string()),
+                Stmt::AttrSet {
+                    value: AttrSrc::Format(Format::Const(v)),
+                    ..
+                } => {
+                    let mut s = String::new();
+                    if self.host.write_str(v, &mut s).is_err() {
+                        return;
+                    }
+                    Some(s)
+                }
+                _ => None,
+            });
+        }
+        let mut tail = code.drain(start - 1..);
+        tail.next(); // `attrs = {}`
+        let mut attrs = Vec::with_capacity(consts.len());
+        let mut attrs_loc = None;
+        for (stmt, text) in tail.by_ref().take(consts.len()).zip(consts) {
+            let Stmt::AttrSet { name, value, loc } = stmt else {
+                unreachable!("checked above")
+            };
+            let mut rendered = String::with_capacity(name.len() + 4);
+            rendered.push(' ');
+            escape_into(&mut rendered, &name);
+            rendered.push_str("=\"");
+            if let Some(text) = text {
+                // `_post_processing_att`: neutralise javascript: URLs in href.
+                if !(&*name == "href" && crate::url::is_malicious_href(&text)) {
+                    escape_into(&mut rendered, &text);
+                }
+                rendered.push('"');
+            }
+            attrs_loc = Some(loc);
+            attrs.push(Attr {
+                name,
+                value,
+                rendered: rendered.into(),
+            });
+        }
+        let rest: Vec<Stmt<H>> = tail.collect();
+        for stmt in rest {
+            match (stmt, attrs_loc.take()) {
+                (Stmt::AttrsFlush { tag }, Some(loc)) => code.push(Stmt::Attrs {
+                    attrs: mem::take(&mut attrs).into(),
+                    tag,
+                    loc,
+                }),
+                (stmt, loc) => {
+                    attrs_loc = loc;
+                    code.push(stmt);
+                }
+            }
+        }
     }
 
     fn directive_att(&mut self, id: NodeId, cx: &mut Cx) -> Result<Code<H>> {
@@ -1317,6 +1641,7 @@ impl<'a, H: Host> Compiler<'a, H> {
             }
         }
         let key = self.host.key(&varname);
+        self.assigned.push(Assigned::Var(varname.clone()));
         let loc = self.loc(id);
         if let Some(expr) = self.doc.node_mut(id).pop("t-value") {
             let expr = if expr.is_empty() {
@@ -1574,8 +1899,18 @@ impl<'a, H: Host> Compiler<'a, H> {
         }
         let mut code = self.flush(false);
         let loc = self.loc(id);
+        let assigned = self.assigned.len();
         let mut body = self.compile_directives(id, cx, iter)?;
         body.extend(self.flush(true));
+        let each = if self.assigned[assigned..]
+            .iter()
+            .any(|a| a.writes_loop_var(&expr_as))
+        {
+            LoopVars::ALL
+        } else {
+            loop_vars_read(&body, &expr_as)
+        };
+        self.assigned.push(Assigned::Loop(expr_as.clone()));
         let source = if !expr_foreach.is_empty() && expr_foreach.bytes().all(|b| b.is_ascii_digit())
         {
             match expr_foreach.parse::<i64>() {
@@ -1600,6 +1935,7 @@ impl<'a, H: Host> Compiler<'a, H> {
             size: k("_size"),
             parity_odd: h.str("odd"),
             parity_even: h.str("even"),
+            each,
             body,
             loc,
         })));

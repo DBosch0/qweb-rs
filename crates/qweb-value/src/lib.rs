@@ -462,6 +462,13 @@ impl Host for ValueHost {
     fn write_str(&self, v: &Value, out: &mut String) -> Result<()> {
         v.write_str(out)
     }
+    fn write_str_escaped(&self, v: &Value, out: &mut String) -> Result<()> {
+        match v {
+            Value::Str(s) | Value::Markup(s) => qweb_core::escape::escape_into(out, s),
+            other => qweb_core::escape::escape_into(out, &other.to_str()?),
+        }
+        Ok(())
+    }
     fn write_escaped(&self, v: &Value, out: &mut String) -> Result<()> {
         match v {
             Value::Markup(s) => out.push_str(s),
@@ -476,23 +483,23 @@ impl Host for ValueHost {
 
     fn iterate(&self, v: Value) -> Result<LoopSource<Self::Iter>> {
         let (iter, size, mapping) = match &v {
-            Value::Int(n) => (LoopIter::Range(0..*n), Some((*n).max(0) as usize), false),
+            Value::Int(n) => (LoopIter::Range(0..*n), Some(*n), false),
             Value::Dict(d) => {
                 let items: Vec<Value> = d
                     .values()
                     .map(|(k, v)| Value::Tuple(Arc::new(vec![k.clone(), v.clone()])))
                     .collect();
-                (LoopIter::Items(items.into_iter()), Some(d.len()), true)
+                (LoopIter::Items(items.into_iter()), Some(d.len() as i64), true)
             }
             Value::List(items) | Value::Tuple(items) | Value::Set(items) => {
                 // Iterate the shared list (a snapshot: lists are never changed in place).
                 let n = items.len();
-                (LoopIter::Seq(items.clone(), 0), Some(n), false)
+                (LoopIter::Seq(items.clone(), 0), Some(n as i64), false)
             }
             Value::Str(_) | Value::Markup(_) | Value::Bytes(_) => {
                 let items = v.iter_items()?;
                 let n = items.len();
-                (LoopIter::Items(items.into_iter()), Some(n), false)
+                (LoopIter::Items(items.into_iter()), Some(n as i64), false)
             }
             Value::Object(_) => (LoopIter::Items(v.iter_items()?.into_iter()), None, false),
             other => {

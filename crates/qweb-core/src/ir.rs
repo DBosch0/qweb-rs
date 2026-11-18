@@ -105,6 +105,54 @@ pub enum AttrSrc<H: Host> {
     Format(Format<H>),
 }
 
+/// One attribute of a [`Stmt::Attrs`].
+#[derive_where(Debug; H::Value, H::Key, H::Opaque, H::Hook)]
+pub struct Attr<H: Host> {
+    /// Attribute name.
+    pub name: Arc<str>,
+    /// Attribute value.
+    pub value: AttrSrc<H>,
+    /// Text output before the value: `` name="``, with the name escaped. For
+    /// a static value, the whole attribute (`` name="value"``).
+    pub rendered: Box<str>,
+}
+
+/// The derived variables of a `t-foreach` (`x_index`, `x_value`, ...), as a set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoopVars(u8);
+
+impl LoopVars {
+    /// `x_index`.
+    pub const INDEX: LoopVars = LoopVars(1);
+    /// `x_value`.
+    pub const VALUE: LoopVars = LoopVars(1 << 1);
+    /// `x_first`.
+    pub const FIRST: LoopVars = LoopVars(1 << 2);
+    /// `x_last`.
+    pub const LAST: LoopVars = LoopVars(1 << 3);
+    /// `x_odd`.
+    pub const ODD: LoopVars = LoopVars(1 << 4);
+    /// `x_even`.
+    pub const EVEN: LoopVars = LoopVars(1 << 5);
+    /// `x_parity`.
+    pub const PARITY: LoopVars = LoopVars(1 << 6);
+    /// No variable.
+    pub const NONE: LoopVars = LoopVars(0);
+    /// Every variable.
+    pub const ALL: LoopVars = LoopVars(0x7f);
+
+    /// Whether every variable of `other` is in this set.
+    pub const fn contains(self, other: LoopVars) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// The variables of either set.
+    #[must_use]
+    pub const fn union(self, other: LoopVars) -> LoopVars {
+        LoopVars(self.0 | other.0)
+    }
+}
+
 /// Location of the element a statement comes from (error reporting).
 ///
 /// Usually just a node id: the text is built by [`Program::location`] only
@@ -315,6 +363,12 @@ pub struct Foreach<H: Host> {
     pub parity_odd: H::Value,
     /// The str `'even'`.
     pub parity_even: H::Value,
+    /// Derived variables the body can read, assigned at every iteration.
+    /// The others are only assigned at the first iteration and when the
+    /// loop ends: nothing can observe them in between. [`LoopVars::ALL`]
+    /// when the body can see the whole scope (`t-call`, lazy content, host
+    /// expressions, ...) or assigns one of the loop variables itself.
+    pub each: LoopVars,
     /// Loop body.
     pub body: Vec<Stmt<H>>,
     /// Location of the element.
@@ -441,6 +495,17 @@ pub enum Stmt<H: Host> {
     AttrsFlush {
         /// Element tag (passed to the attribute post-processing).
         tag: Arc<str>,
+    },
+    /// `attrs = {...}` immediately followed by its rendering: the fusion of
+    /// an [`Stmt::AttrsInit`], [`Stmt::AttrSet`]s with distinct names and an
+    /// [`Stmt::AttrsFlush`], rendered without building the attribute dict.
+    Attrs {
+        /// The attributes, in output order.
+        attrs: Box<[Attr<H>]>,
+        /// Element tag (passed to the attribute post-processing).
+        tag: Arc<str>,
+        /// Location of the element.
+        loc: Loc,
     },
     /// `t-out` / `t-field`.
     Out(Box<Out<H>>),

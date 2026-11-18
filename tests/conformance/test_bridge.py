@@ -96,3 +96,46 @@ def test_reentrant_proxy():
     # the directive is over: its proxies are expired
     with pytest.raises(RuntimeError, match="only available"):
         outer[0].tag
+
+
+class AttBridge(qweb_rs.Bridge):
+    """`_post_processing_att` override: every dynamic attribute dict goes through it."""
+
+    flags = qweb_rs.FLAG_POST_PROCESSING
+
+    def __init__(self, source):
+        self.source = source
+        self.calls = []
+
+    def load(self, ref):
+        return self.source
+
+    def post_processing_att(self, tag, attrs):
+        if attrs.get("__is_static_node"):
+            return attrs
+        self.calls.append((tag, dict(attrs)))
+        return {**attrs, "data-tag": tag}
+
+
+def test_post_processing_att():
+    # The host gets the attribute dict of every element, in order: the ones
+    # set and rendered in a row (`a`), the ones rendered with the content
+    # (`b`) and the ones updated from a dict (`i`).
+    bridge = AttBridge(
+        '<t t-name="main">'
+        '<a class="c" t-att-href="u" t-attf-id="i{{ n }}" t-att-none="None">x</a>'
+        '<b t-att-n="n" t-out="n"/>'
+        '<i t-att="{\'k\': n}" title="t"/>'
+        "</t>"
+    )
+    out = qweb_rs.Engine().render("main", {"u": "/u?a&b", "n": 7}, bridge=bridge)
+    assert out == (
+        '<a class="c" href="/u?a&amp;b" id="i7" data-tag="a">x</a>'
+        '<b n="7" data-tag="b">7</b>'
+        '<i title="t" k="7" data-tag="i"></i>'
+    )
+    assert bridge.calls == [
+        ("a", {"class": "c", "href": "/u?a&b", "id": "i7", "none": None}),
+        ("b", {"n": 7}),
+        ("i", {"title": "t", "k": 7}),
+    ]

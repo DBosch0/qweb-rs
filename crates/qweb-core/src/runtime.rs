@@ -14,8 +14,8 @@ use crate::escape::escape_into;
 use crate::expr::CmpOp;
 use crate::host::{CompileOptions, Host, Loaded, TemplateRef};
 use crate::ir::{
-    Assets, AttrSrc, Call, CallArg, CallTarget, Ex, Foreach, Format, FormatPart, Loc, Otherwise,
-    Out, OutContent, Program, Stmt,
+    Assets, Attr, AttrSrc, Call, CallArg, CallTarget, Ex, Foreach, Format, FormatPart, Loc,
+    LoopVars, Otherwise, Out, OutContent, Program, Stmt,
 };
 use crate::xml::Document;
 
@@ -169,6 +169,7 @@ impl<H: Host> Engine<H> {
             memo: Vec::new(),
             attr_pool: Default::default(),
             scratch: String::new(),
+            attr_tmp: Vec::new(),
         };
         r.run_program(program, scope, ctx, &mut out)?;
         program.size_hint.store(out.len(), Ordering::Relaxed);
@@ -337,6 +338,7 @@ impl<H: Host> Lazy<H> {
             memo: Vec::new(),
             attr_pool: Default::default(),
             scratch: String::new(),
+            attr_tmp: Vec::new(),
         };
         r.render_lazy_body(self, &mut out)
             .map_err(|e| e.with_frame(err_frame(&self.program, &self.loc)))?;
@@ -404,6 +406,10 @@ impl<H: Host> AttrMap<H> {
 struct Frame<H: Host> {
     scope: H::Scope,
     attrs: Option<AttrMap<H>>,
+    /// The `foreach_attrs` local of the Python function: `attrs` as the
+    /// last `t-foreach` started, restored at each iteration. Nested loops
+    /// share it, so an inner loop changes what the outer one restores.
+    foreach_attrs: Option<AttrMap<H>>,
     /// `values['__qweb_options__']`.
     options: Option<H::Value>,
     ctx: H::Context,
@@ -421,6 +427,17 @@ struct Renderer<'e, H: Host> {
     attr_pool: [Option<AttrItems<H>>; 4],
     /// Scratch buffer for attribute names and values.
     scratch: String,
+    /// Evaluated dynamic attributes of the [`Stmt::Attrs`] being run.
+    attr_tmp: Vec<AttrTmp<H>>,
+}
+
+/// An evaluated dynamic attribute of a [`Stmt::Attrs`].
+enum AttrTmp<H: Host> {
+    /// Expression result.
+    Value(H::Value),
+    /// Rendered format string: where it ends in the scratch buffer (it
+    /// starts where the previous one ends).
+    Text(usize),
 }
 
 fn err_frame<H: Host>(prog: &Program<H>, loc: &Loc) -> crate::Frame {
@@ -486,9 +503,12 @@ fn write_attributes<H: Host>(
                 if !(h.is_str(v) || h.truthy(v)?) {
                     continue;
                 }
-                buf.clear();
-                h.write_str(v, buf)?;
-                buf
+                out.push(' ');
+                escape_into(out, name);
+                out.push_str("=\"");
+                h.write_str_escaped(v, out)?;
+                out.push('"');
+                continue;
             }
         };
         out.push(' ');
@@ -516,6 +536,13 @@ impl<H: Host> Renderer<'_, H> {
         AttrMap {
             items: items.unwrap_or_default(),
         }
+    }
+
+    /// A copy of an attribute map.
+    fn copy_attrs(&mut self, attrs: &AttrMap<H>) -> AttrMap<H> {
+        let mut copy = self.new_attrs();
+        copy.items.extend(attrs.items.iter().cloned());
+        copy
     }
 
     /// Give back the list of an attribute map that is no longer used.
@@ -594,6 +621,7 @@ impl<H: Host> Renderer<'_, H> {
         let mut frame = Frame {
             scope,
             attrs: None,
+            foreach_attrs: None,
             options: None,
             ctx,
         };
@@ -604,6 +632,7 @@ impl<H: Host> Renderer<'_, H> {
         let mut frame = Frame {
             scope: self.h.scope_copy(&lazy.scope),
             attrs: None,
+            foreach_attrs: None,
             options: None,
             ctx: lazy.ctx.clone(),
         };
@@ -779,6 +808,9 @@ impl<H: Host> Renderer<'_, H> {
                         }
                     }
                 }
+                Stmt::Attrs { attrs, tag, loc } => self
+                    .run_attrs(attrs, tag, frame, out)
+                    .map_err(|e| locate(e, prog, loc))?,
                 Stmt::Out(o) => self
                     .run_out(prog, o, frame, out)
                     .map_err(|e| locate(e, prog, &o.loc))?,
@@ -825,50 +857,122 @@ impl<H: Host> Renderer<'_, H> {
             }
         };
         if let Some(n) = src.size {
-            h.scope_set(&mut frame.scope, &f.size, h.int(n as i64));
+            h.scope_set(&mut frame.scope, &f.size, h.int(n));
         }
-        let saved = frame.attrs.take();
+        // `foreach_attrs = attrs`
+        let saved = frame.attrs.as_ref().map(|a| self.copy_attrs(a));
+        let old = mem::replace(&mut frame.foreach_attrs, saved);
+        self.recycle_attrs(old);
+        // Derived variables the body cannot observe are assigned at the
+        // first iteration (which creates the keys, in order), then only once
+        // the loop ends. `stale` is the last iteration they were skipped
+        // for, with its `x_value`.
+        let each = f.each;
+        let mut stale: Option<(usize, H::Value)> = None;
+        let mut res = Ok(());
         for (index, item) in src.iter.enumerate() {
-            let item = item.map_err(loc_err)?;
-            let attrs = saved.as_ref().map(|s| {
-                let mut a = self.new_attrs();
-                a.items.extend(s.items.iter().cloned());
-                a
-            });
+            let item = match item {
+                Ok(item) => item,
+                Err(e) => {
+                    res = Err(loc_err(e));
+                    break;
+                }
+            };
+            // `attrs = foreach_attrs`
+            let attrs = frame.foreach_attrs.as_ref().map(|a| self.copy_attrs(a));
             let old = mem::replace(&mut frame.attrs, attrs);
             self.recycle_attrs(old);
             let scope = &mut frame.scope;
-            h.scope_set(scope, &f.index, h.int(index as i64));
-            if src.mapping {
-                let (k, v) = h.unpack_pair(item).map_err(loc_err)?;
-                h.scope_set(scope, &f.var, k);
-                h.scope_set(scope, &f.value, v);
+            let all = index == 0;
+            let sets = |var: LoopVars| all || each.contains(var);
+            if sets(LoopVars::INDEX) {
+                h.scope_set(scope, &f.index, h.int(index as i64));
+            }
+            let value = if src.mapping {
+                match h.unpack_pair(item) {
+                    Ok((k, v)) => {
+                        h.scope_set(scope, &f.var, k);
+                        v
+                    }
+                    Err(e) => {
+                        // Python has assigned `x_index` only.
+                        if let Some((i, v)) = stale.take() {
+                            Self::set_loop_vars(h, f, scope, i, v, src.size);
+                        }
+                        h.scope_set(scope, &f.index, h.int(index as i64));
+                        res = Err(loc_err(e));
+                        break;
+                    }
+                }
             } else {
                 h.scope_set(scope, &f.var, item.clone());
-                h.scope_set(scope, &f.value, item);
+                item
+            };
+            if all || each == LoopVars::ALL {
+                Self::set_loop_vars(h, f, scope, index, value, src.size);
+            } else {
+                if each != LoopVars::NONE {
+                    if each.contains(LoopVars::VALUE) {
+                        h.scope_set(scope, &f.value, value.clone());
+                    }
+                    if each.contains(LoopVars::FIRST) {
+                        h.scope_set(scope, &f.first, h.bool(false));
+                    }
+                    if each.contains(LoopVars::LAST)
+                        && let Some(n) = src.size
+                    {
+                        h.scope_set(scope, &f.last, h.bool(index as i64 + 1 == n));
+                    }
+                    let odd = index % 2 == 1;
+                    if each.contains(LoopVars::ODD) {
+                        h.scope_set(scope, &f.odd, h.int(i64::from(odd)));
+                    }
+                    if each.contains(LoopVars::EVEN) {
+                        h.scope_set(scope, &f.even, h.bool(!odd));
+                    }
+                    if each.contains(LoopVars::PARITY) {
+                        let parity = if odd { &f.parity_odd } else { &f.parity_even };
+                        h.scope_set(scope, &f.parity, parity.clone());
+                    }
+                }
+                stale = Some((index, value));
             }
-            h.scope_set(scope, &f.first, h.bool(index == 0));
-            if let Some(n) = src.size {
-                h.scope_set(scope, &f.last, h.bool(index + 1 == n));
+            res = self.run(prog, &f.body, frame, out);
+            if res.is_err() {
+                break;
             }
-            let odd = index % 2 == 1;
-            h.scope_set(scope, &f.odd, h.int((index % 2) as i64));
-            h.scope_set(scope, &f.even, h.bool(!odd));
-            h.scope_set(
-                scope,
-                &f.parity,
-                if odd {
-                    f.parity_odd.clone()
-                } else {
-                    f.parity_even.clone()
-                },
-            );
-            self.run(prog, &f.body, frame, out)?;
+            // `attrs = None`
             let old = frame.attrs.take();
             self.recycle_attrs(old);
         }
-        self.recycle_attrs(saved);
-        Ok(())
+        if let Some((index, value)) = stale {
+            let scope = &mut frame.scope;
+            h.scope_set(scope, &f.index, h.int(index as i64));
+            Self::set_loop_vars(h, f, scope, index, value, src.size);
+        }
+        res
+    }
+
+    /// Assign the derived variables of iteration `index` that follow `x`
+    /// (`x_value` to `x_parity`), in the order of the Python engine.
+    fn set_loop_vars(
+        h: &H,
+        f: &Foreach<H>,
+        scope: &mut H::Scope,
+        index: usize,
+        value: H::Value,
+        size: Option<i64>,
+    ) {
+        h.scope_set(scope, &f.value, value);
+        h.scope_set(scope, &f.first, h.bool(index == 0));
+        if let Some(n) = size {
+            h.scope_set(scope, &f.last, h.bool(index as i64 + 1 == n));
+        }
+        let odd = index % 2 == 1;
+        h.scope_set(scope, &f.odd, h.int(i64::from(odd)));
+        h.scope_set(scope, &f.even, h.bool(!odd));
+        let parity = if odd { &f.parity_odd } else { &f.parity_even };
+        h.scope_set(scope, &f.parity, parity.clone());
     }
 
     fn run_out(
@@ -975,30 +1079,42 @@ impl<H: Host> Renderer<'_, H> {
         } else {
             frame.ctx.clone()
         };
-        let mut values = h.scope_new();
         let slot = match c.body {
             Some(b) => self.make_lazy(prog, b, &c.loc, &frame.scope, &frame.ctx),
             None => h.str(""),
         };
-        h.scope_set(&mut values, &h.slot_key(), slot);
+        // `t_call_values = {0: body, name: value, ...}`, evaluated in the
+        // caller's scope, then `values = values.copy()` updated with them.
+        // Without `t-args` (which updates the dict from a value), the call
+        // values are kept in a list and assigned to the copy directly: the
+        // resulting dict is the same, keys in the same order.
+        let has_args = c.args.iter().any(|a| matches!(a, CallArg::Args(_)));
+        let mut values = has_args.then(|| h.scope_new());
+        let mut list = Vec::with_capacity(if has_args { 0 } else { c.args.len() + 1 });
+        let slot_key = h.slot_key();
+        match &mut values {
+            Some(values) => h.scope_set(values, &slot_key, slot),
+            None => list.push((&slot_key, slot)),
+        }
         for arg in &c.args {
-            match arg {
-                CallArg::Expr(k, e) => {
-                    let v = self.eval(e, &frame.scope).map_err(loc_err)?;
-                    h.scope_set(&mut values, k, v);
-                }
-                CallArg::Format(k, f) => {
-                    let v = self.format_value(f, &frame.scope).map_err(loc_err)?;
-                    h.scope_set(&mut values, k, v);
-                }
+            let (k, v) = match arg {
+                CallArg::Expr(k, e) => (k, self.eval(e, &frame.scope).map_err(loc_err)?),
+                CallArg::Format(k, f) => (k, self.format_value(f, &frame.scope).map_err(loc_err)?),
                 CallArg::MarkupFormat(k, f) => {
                     let s = self.format_string(f, &frame.scope).map_err(loc_err)?;
-                    h.scope_set(&mut values, k, h.markup(&s));
+                    (k, h.markup(&s))
                 }
                 CallArg::Args(e) => {
                     let v = self.eval(e, &frame.scope).map_err(loc_err)?;
-                    h.scope_update_pairs(&mut values, &v).map_err(loc_err)?;
+                    if let Some(values) = &mut values {
+                        h.scope_update_pairs(values, &v).map_err(loc_err)?;
+                    }
+                    continue;
                 }
+            };
+            match &mut values {
+                Some(values) => h.scope_set(values, k, v),
+                None => list.push((k, v)),
             }
         }
         let target = match &c.target {
@@ -1009,7 +1125,12 @@ impl<H: Host> Renderer<'_, H> {
             }
         };
         let mut scope = h.scope_copy(&frame.scope);
-        h.scope_update(&mut scope, &values);
+        if let Some(values) = &values {
+            h.scope_update(&mut scope, values);
+        }
+        for (k, v) in list {
+            h.scope_set(&mut scope, k, v);
+        }
         self.render_template(&target, scope, ctx, out)
             .map_err(|e| e.with_frame(err_frame(prog, &c.loc)))
     }
@@ -1053,6 +1174,157 @@ impl<H: Host> Renderer<'_, H> {
         Ok(())
     }
 
+    /// The value of an attribute, as stored in the attribute dict.
+    fn attr_value(&self, src: &AttrSrc<H>, scope: &H::Scope) -> Result<AttrVal<H>> {
+        Ok(match src {
+            AttrSrc::Static(s) => AttrVal::Static(s.clone()),
+            AttrSrc::Expr(e) => AttrVal::Value(self.eval(e, scope)?),
+            AttrSrc::Format(Format::Const(v)) => AttrVal::Value(v.clone()),
+            AttrSrc::Format(f) => AttrVal::Text(self.format_string(f, scope)?),
+        })
+    }
+
+    /// [`Stmt::Attrs`]: `attrs = {...}`, `_render_attributes(tag, attrs)`,
+    /// `attrs = None`, without the dict.
+    fn run_attrs(
+        &mut self,
+        attrs: &[Attr<H>],
+        tag: &str,
+        frame: &mut Frame<H>,
+        out: &mut String,
+    ) -> Result<()> {
+        let h = self.h;
+        let old = frame.attrs.take();
+        self.recycle_attrs(old);
+        if h.custom_post_processing(&frame.ctx) {
+            // The host wants the dict.
+            let mut map = self.new_attrs();
+            let mut res = Ok(());
+            for a in attrs {
+                match self.attr_value(&a.value, &frame.scope) {
+                    Ok(v) => map.items.push((a.name.clone(), v)),
+                    Err(e) => {
+                        res = Err(e);
+                        break;
+                    }
+                }
+            }
+            if res.is_ok() {
+                res = self.render_attributes(&frame.ctx, tag, &mut map, out);
+            }
+            self.recycle_attrs(Some(map));
+            return res;
+        }
+        let mut buf = mem::take(&mut self.scratch);
+        let mut tmp = mem::take(&mut self.attr_tmp);
+        buf.clear();
+        let res = self.write_attrs(attrs, &frame.scope, &mut buf, &mut tmp, out);
+        tmp.clear();
+        self.scratch = buf;
+        self.attr_tmp = tmp;
+        res
+    }
+
+    /// Evaluate every dynamic attribute (like the dict assignments), then
+    /// write them all (like `_render_attributes`). `buf` holds the rendered
+    /// format strings, `tmp` the evaluated attributes.
+    fn write_attrs(
+        &self,
+        attrs: &[Attr<H>],
+        scope: &H::Scope,
+        buf: &mut String,
+        tmp: &mut Vec<AttrTmp<H>>,
+        out: &mut String,
+    ) -> Result<()> {
+        let h = self.h;
+        let is_const = |a: &Attr<H>| {
+            matches!(
+                a.value,
+                AttrSrc::Static(_) | AttrSrc::Format(Format::Const(_))
+            )
+        };
+        for a in attrs {
+            match &a.value {
+                AttrSrc::Expr(e) => tmp.push(AttrTmp::Value(self.eval(e, scope)?)),
+                AttrSrc::Format(Format::Parts(parts)) => {
+                    self.format_into(parts, scope, buf)?;
+                    tmp.push(AttrTmp::Text(buf.len()));
+                }
+                AttrSrc::Static(_) | AttrSrc::Format(Format::Const(_)) => {}
+            }
+        }
+        let texts = buf.len();
+        // `_post_processing_att`: neutralise javascript: URLs in href (the
+        // check of a constant href was made when compiling).
+        let mut malicious = None;
+        if let Some(i) = attrs.iter().position(|a| &*a.name == "href")
+            && !is_const(&attrs[i])
+        {
+            let t = attrs[..i].iter().filter(|a| !is_const(a)).count();
+            let bad = match &tmp[t] {
+                AttrTmp::Value(v) => {
+                    if h.truthy(v)? {
+                        h.write_str(v, buf)?;
+                    }
+                    let bad = crate::url::is_malicious_href(&buf[texts..]);
+                    buf.truncate(texts);
+                    bad
+                }
+                AttrTmp::Text(end) => {
+                    crate::url::is_malicious_href(&buf[Self::text_start(tmp, t)..*end])
+                }
+            };
+            if bad {
+                malicious = Some(i);
+            }
+        }
+        let mut dynamic = tmp.iter();
+        let mut start = 0;
+        for (i, a) in attrs.iter().enumerate() {
+            if is_const(a) {
+                out.push_str(&a.rendered);
+                continue;
+            }
+            let Some(value) = dynamic.next() else {
+                break;
+            };
+            match value {
+                _ if malicious == Some(i) => {
+                    if let AttrTmp::Text(end) = value {
+                        start = *end;
+                    }
+                    out.push_str(&a.rendered);
+                }
+                AttrTmp::Value(v) => {
+                    if !(h.is_str(v) || h.truthy(v)?) {
+                        continue;
+                    }
+                    out.push_str(&a.rendered);
+                    h.write_str_escaped(v, out)?;
+                }
+                AttrTmp::Text(end) => {
+                    out.push_str(&a.rendered);
+                    escape_into(out, &buf[start..*end]);
+                    start = *end;
+                }
+            }
+            out.push('"');
+        }
+        Ok(())
+    }
+
+    /// Where the text of `tmp[t]` starts in the scratch buffer.
+    fn text_start(tmp: &[AttrTmp<H>], t: usize) -> usize {
+        tmp[..t]
+            .iter()
+            .rev()
+            .find_map(|v| match v {
+                AttrTmp::Text(end) => Some(*end),
+                AttrTmp::Value(_) => None,
+            })
+            .unwrap_or(0)
+    }
+
     /// `_render_attributes` (with the base `_post_processing_att`).
     fn render_attributes(
         &mut self,
@@ -1087,18 +1359,29 @@ impl<H: Host> Renderer<'_, H> {
                     })
                     .sum();
                 let mut s = String::with_capacity(cap);
-                for p in parts {
-                    match p {
-                        FormatPart::Lit(l) => s.push_str(l),
-                        FormatPart::Expr(e) => {
-                            let v = self.eval(e, scope)?;
-                            self.h.write_text(&v, &mut s)?;
-                        }
-                    }
-                }
+                self.format_into(parts, scope, &mut s)?;
                 Ok(s)
             }
         }
+    }
+
+    /// Append a rendered format string to `out`.
+    fn format_into(
+        &self,
+        parts: &[FormatPart<H>],
+        scope: &H::Scope,
+        out: &mut String,
+    ) -> Result<()> {
+        for p in parts {
+            match p {
+                FormatPart::Lit(l) => out.push_str(l),
+                FormatPart::Expr(e) => {
+                    let v = self.eval(e, scope)?;
+                    self.h.write_text(&v, out)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn format_value(&self, f: &Format<H>, scope: &H::Scope) -> Result<H::Value> {

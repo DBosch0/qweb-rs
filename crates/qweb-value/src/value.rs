@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use indexmap::IndexMap;
 use qweb_core::escape::escape_into;
+use qweb_core::num::write_float_repr;
 use qweb_core::{Error, Lazy, Result};
 
 use crate::ValueHost;
@@ -207,96 +208,8 @@ pub fn attribute_error(type_name: &str, attr: &str) -> Error {
 /// Python `repr(float)`.
 pub fn float_repr(f: f64) -> String {
     let mut out = String::new();
-    write_float(f, &mut out);
+    write_float_repr(f, &mut out);
     out
-}
-
-/// A string formatted in a fixed-size stack buffer (no allocation).
-struct StackStr<const N: usize> {
-    buf: [u8; N],
-    len: usize,
-}
-
-impl<const N: usize> StackStr<N> {
-    fn new() -> Self {
-        StackStr {
-            buf: [0; N],
-            len: 0,
-        }
-    }
-
-    fn as_str(&self) -> &str {
-        // Only whole `&str`s are copied in.
-        str::from_utf8(&self.buf[..self.len]).unwrap_or("")
-    }
-}
-
-impl<const N: usize> fmt::Write for StackStr<N> {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        let end = self.len + s.len();
-        if end > N {
-            return Err(fmt::Error);
-        }
-        self.buf[self.len..end].copy_from_slice(s.as_bytes());
-        self.len = end;
-        Ok(())
-    }
-}
-
-/// Python `repr(float)` appended to `out`.
-fn write_float(f: f64, out: &mut String) {
-    if f.is_nan() {
-        return out.push_str("nan");
-    }
-    if f.is_infinite() {
-        return out.push_str(if f > 0.0 { "inf" } else { "-inf" });
-    }
-    if f == 0.0 {
-        return out.push_str(if f.is_sign_negative() { "-0.0" } else { "0.0" });
-    }
-    // Shortest round-trip digits and exponent, then Python's layout rules.
-    // Both are formatted on the stack (at most 17 digits plus the exponent).
-    let mut e = StackStr::<32>::new();
-    let _ = write!(e, "{:e}", f.abs());
-    // `{:e}` always writes `<digits>e<exponent>`.
-    let (mant, exp) = e.as_str().split_once('e').unwrap_or((e.as_str(), "0"));
-    let exp: i32 = exp.parse().unwrap_or(0);
-    let mut digits = StackStr::<32>::new();
-    for part in mant.split('.') {
-        let _ = digits.write_str(part);
-    }
-    let digits = digits.as_str();
-    let decpt = exp + 1;
-    if f < 0.0 {
-        out.push('-');
-    }
-    if decpt <= -4 || decpt > 16 {
-        out.push_str(&digits[..1]);
-        if digits.len() > 1 {
-            out.push('.');
-            out.push_str(&digits[1..]);
-        }
-        let _ = write!(out, "e{}{:02}", if exp < 0 { '-' } else { '+' }, exp.abs());
-    } else if decpt <= 0 {
-        out.push_str("0.");
-        for _ in 0..(-decpt) {
-            out.push('0');
-        }
-        out.push_str(digits);
-    } else {
-        let d = decpt as usize;
-        if digits.len() <= d {
-            out.push_str(digits);
-            for _ in digits.len()..d {
-                out.push('0');
-            }
-            out.push_str(".0");
-        } else {
-            out.push_str(&digits[..d]);
-            out.push('.');
-            out.push_str(&digits[d..]);
-        }
-    }
 }
 
 /// Python `repr(str)`.
@@ -467,7 +380,7 @@ impl Value {
             Value::Int(i) => {
                 let _ = write!(out, "{i}");
             }
-            Value::Float(f) => write_float(*f, out),
+            Value::Float(f) => write_float_repr(*f, out),
             Value::Str(s) => out.push_str(&str_repr(s)),
             Value::Markup(s) => {
                 out.push_str("Markup(");

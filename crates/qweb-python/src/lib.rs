@@ -225,6 +225,37 @@ fn is_plain_scalar(b: &Bound<'_, PyAny>) -> bool {
         || b.is_exact_instance_of::<PyBool>()
 }
 
+/// Append `str(v)` when `v` is an exact bool, float or int that fits `i64`,
+/// formatted here: same text as Python, without creating the `str` object.
+/// Returns `false` (nothing written) for any other value.
+fn write_plain_scalar(b: &Bound<'_, PyAny>, out: &mut String) -> bool {
+    if b.is_exact_instance_of::<PyInt>() {
+        let mut overflow = 0;
+        // SAFETY: `b` is an int and the GIL is held. On overflow the function
+        // returns -1 with `overflow` set, without raising.
+        let i = unsafe { pyo3::ffi::PyLong_AsLongLongAndOverflow(b.as_ptr(), &raw mut overflow) };
+        if overflow != 0 {
+            return false;
+        }
+        qweb_core::num::write_int(i, out);
+        true
+    } else if b.is_exact_instance_of::<PyFloat>() {
+        // SAFETY: `b` is a float and the GIL is held.
+        let f = unsafe { pyo3::ffi::PyFloat_AsDouble(b.as_ptr()) };
+        qweb_core::num::write_float_repr(f, out);
+        true
+    } else if b.is_exact_instance_of::<PyBool>() {
+        out.push_str(if b.is(PyBool::new(b.py(), true)) {
+            "True"
+        } else {
+            "False"
+        });
+        true
+    } else {
+        false
+    }
+}
+
 /// Append a Python str (`to_cow` copies only for non-UTF-8 surrogates).
 fn push_str(out: &mut String, s: &Bound<'_, PyString>) -> Result<()> {
     out.push_str(&s.to_cow().map_err(herr)?);
@@ -578,8 +609,8 @@ impl Host for PyHost {
         if self.is_none_or_false(v) {
             return Ok(());
         }
-        if is_plain_scalar(b) {
-            return push_str(out, &b.str().map_err(herr)?);
+        if write_plain_scalar(b, out) {
+            return Ok(());
         }
         let t = self.text_value(v)?;
         let t = t.bind(py);
@@ -594,7 +625,24 @@ impl Host for PyHost {
         if let Ok(s) = b.cast_exact::<PyString>() {
             return push_str(out, s);
         }
+        if write_plain_scalar(b, out) {
+            return Ok(());
+        }
         push_str(out, &b.str().map_err(herr)?)
+    }
+    fn write_str_escaped(&self, v: &Py<PyAny>, out: &mut String) -> Result<()> {
+        let b = v.bind(py());
+        if let Ok(s) = b.cast_exact::<PyString>() {
+            escape_into(out, &s.to_cow().map_err(herr)?);
+            return Ok(());
+        }
+        // str() of int/float/bool never contains characters to escape
+        if write_plain_scalar(b, out) {
+            return Ok(());
+        }
+        let s = b.str().map_err(herr)?;
+        escape_into(out, &s.to_cow().map_err(herr)?);
+        Ok(())
     }
     fn write_escaped(&self, v: &Py<PyAny>, out: &mut String) -> Result<()> {
         let py = py();
@@ -603,8 +651,18 @@ impl Host for PyHost {
             escape_into(out, &s.to_cow().map_err(herr)?);
             return Ok(());
         }
+        // str() of int/float/bool never contains characters to escape
+        if write_plain_scalar(b, out) {
+            return Ok(());
+        }
+        // An exact `Markup`: `__html__()` returns the object itself.
+        if b.get_type_ptr().cast::<pyo3::ffi::PyObject>() == self.g.markup.as_ptr()
+            && let Ok(s) = b.cast::<PyString>()
+        {
+            return push_str(out, s);
+        }
         if is_plain_scalar(b) {
-            // str() of int/float/bool never contains characters to escape
+            // an int beyond i64
             return push_str(out, &b.str().map_err(herr)?);
         }
         // markupsafe.escape: objects with __html__ are trusted.
@@ -625,7 +683,7 @@ impl Host for PyHost {
             let n = l.len();
             return Ok(LoopSource {
                 iter: PyIter::List(l.clone().unbind(), 0),
-                size: Some(n),
+                size: Some(n as i64),
                 mapping: false,
             });
         }
@@ -633,7 +691,7 @@ impl Host for PyHost {
             let n = t.len();
             return Ok(LoopSource {
                 iter: PyIter::Tuple(t.clone().unbind(), 0),
-                size: Some(n),
+                size: Some(n as i64),
                 mapping: false,
             });
         }
@@ -641,10 +699,10 @@ impl Host for PyHost {
             let mut iterable = b.clone();
             let mut size = None;
             if b.is_instance(self.g.sized.bind(py))? {
-                size = Some(b.len()?);
+                size = Some(b.len()? as i64);
             } else if b.is_exact_instance_of::<PyInt>() {
                 let n: i64 = b.extract()?;
-                size = Some(n.max(0) as usize);
+                size = Some(n);
                 iterable = self.g.range.bind(py).call1((n,))?;
             }
             let mut mapping = false;

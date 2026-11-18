@@ -26,7 +26,14 @@ EXPRS = [
     'l[0]', "d['k']", "d.get('x', 'y')", 'not a', 'a and s', 'n or s', "a if f else 'no'", '[1, s]', '(a, n)',
     "{'k': a}", 'a > 2', 'a < 2 < 3', 'l', 's.upper()', "'%s!' % s", 'True', 'False', 'None', '1.5', '0.1 + 0.2',
     'v1', 'v2', 'v1 + s', 'xmlid', '0 if a else 1',
+    # numbers formatted without str(): ints and floats in every layout (no int
+    # beyond 64 bits: as a t-foreach count, Python would iterate it for ever)
+    'a / 7', 'a * 0.25', '1e16 * a', '2 ** 62', '-a', 'a * 1e-7', '10.0 ** a', '-0.0', '938072170685064.25',
 ]
+# Variables of the loops, read anywhere: after a loop they keep the values of
+# its last iteration, and in a called template those of the caller.
+LOOP_VARS = [f'{v}{suffix}' for v in 'ijk'
+             for suffix in ['', '_index', '_value', '_first', '_last', '_parity', '_odd', '_even', '_size']]
 LOOPS = ['l', 'd', '3', 'range(2)', 'z', "'ab'", '[]', 'None', 'a']
 ATT_EXPRS = ['a', 's', 'n', 'f', "''", '0', 'True', 'm', "'javascript:x'", "{'data-x': s}", "('k', 'v')", '[]']
 
@@ -47,7 +54,10 @@ class Gen:
     def expr(self):
         if self.vars and self.r.random() < 0.3:
             v = self.r.choice(self.vars)
-            return q(self.r.choice([v, f'{v}_index', f'{v}_value', f'{v}_first', f'{v}_last', f'{v}_parity', f'{v}_odd', f'{v}_size']))
+            return q(self.r.choice([v, f'{v}_index', f'{v}_value', f'{v}_first', f'{v}_last', f'{v}_parity', f'{v}_odd',
+                                    f'{v}_even', f'{v}_size']))
+        if self.r.random() < 0.1:
+            return self.r.choice(LOOP_VARS)
         return q(self.r.choice(EXPRS))
 
     def attrs(self, tag):
@@ -114,6 +124,9 @@ class Gen:
             directives.append(f't-out="{self.expr()}"')
         elif self.r.random() < 0.1 and tag == 't' and not extra:
             name = self.r.choice(['v1', 'v2', 'z'])
+            if self.r.random() < 0.15:
+                # assign a loop variable (inside or outside its loop)
+                name = self.r.choice(LOOP_VARS)
             if self.r.random() < 0.5:
                 directives.append(f't-set="{name}" t-value="{self.expr()}"')
                 body = ''
@@ -146,9 +159,12 @@ VALUES = {
 def make_case(rnd):
     g = Gen(rnd)
     main = f'<t t-name="main">{g.children(0)}</t>'
-    sub1 = f'<t t-name="sub1">{g.text()}<t t-out="0"/>{g.text()}<b t-out="a"/>{g.text()}</t>'
+    seen = ''.join(f'<t t-out="{v}"/>,' for v in rnd.sample(LOOP_VARS, 6))
+    sub1 = f'<t t-name="sub1">{g.text()}<t t-out="0"/>{g.text()}<b t-out="a"/>{g.text()}<u>{seen}</u></t>'
     sub2 = f'<t t-name="sub2"><div>{g.children(2)}</div></t>'
     opts = {'preserve_comments': True} if rnd.random() < 0.2 else {}
+    # the loop variables as the template ends
+    main = f'{main[:-4]}<t t-call="sub1"/></t>'
     return {'main': 'main', 'templates': {'main': main, 'sub1': sub1, 'sub2': sub2}, 'values': VALUES, 'options': opts}
 
 
