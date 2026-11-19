@@ -11,6 +11,12 @@ All packages share one version: the crates on crates.io (`qweb-core`,
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/DBosch0/qweb-rs/compare/v0.2.0...v0.2.1) - 2026-11-19
+
+### Other
+
+- update README benches
+
 ## [0.2.0](https://github.com/DBosch0/qweb-rs/compare/v0.1.2...v0.2.0) - 2026-11-18
 
 Faster rendering through the Python package: a cached `Engine.render` takes
