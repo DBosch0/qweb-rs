@@ -13,9 +13,9 @@ faster. Every rendering rule, including whitespace handling, escaping, attribute
 order and error classes, follows the original implementation. Differential tests
 and fuzzers compare the two engines.
 
-- **Rendering:** 18x to 150x faster than `ir_qweb.render()`, and 7x to 17x
+- **Rendering:** 25x to 180x faster than `ir_qweb.render()`, and 5.7x to 24x
   faster with cached compilation (what Odoo does in production).
-- **Template inheritance:** 2.1x faster than Odoo's lxml implementation, and
+- **Template inheritance:** 2.2x faster than Odoo's lxml implementation, and
   the same results on every real view combination tested.
 - **Portable:** the core is pure Rust with no SIMD or platform-specific
   code, and it builds for `wasm32`.
@@ -197,40 +197,42 @@ matches Odoo's behaviour until it is fixed upstream.
 ## Benchmarks
 
 Measured with [hyperfine](https://github.com/sharkdp/hyperfine) on an AMD Ryzen 7
-8845HS (Python 3.14, Node 26, release builds), with process startup subtracted.
+8845HS (Python 3.14, Node 26, release builds), with process startup subtracted
+(qweb-rs 0.2.0, November 2026).
 
 **Rendering, compiling on every call** (`ir_qweb.render` vs `qweb_rs.render`):
 
 | template | Python | Rust | speed-up |
 |---|---:|---:|---:|
-| `table_500_rows` | 10.18 ms | 0.56 ms | 18x |
-| `nested_calls` | 6.72 ms | 0.30 ms | 23x |
-| `static_page` | 3.11 ms | 0.12 ms | 25x |
-| `small_snippet` | 0.99 ms | 0.007 ms | ~150x |
+| `table_500_rows` | 10.28 ms | 0.32 ms | 32x |
+| `nested_calls` | 6.72 ms | 0.20 ms | 33x |
+| `static_page` | 3.09 ms | 0.13 ms | 25x |
+| `small_snippet` | 0.98 ms | 0.0055 ms | ~180x |
 
 **Rendering with cached compilation** (`ir.qweb` code cache vs `qweb_rs.Engine`):
 
 | template | Python | Rust | speed-up |
 |---|---:|---:|---:|
-| `table_500_rows` | 7303 µs | 537 µs | 13.6x |
-| `nested_calls` | 3328 µs | 266 µs | 12.5x |
-| `static_page` | 10.5 µs | 1.5 µs | 7.1x |
-| `small_snippet` | 14.0 µs | 0.8 µs | 17.3x |
+| `table_500_rows` | 7368 µs | 310 µs | 23.7x |
+| `nested_calls` | 3334 µs | 187 µs | 17.8x |
+| `static_page` | 10.4 µs | 1.83 µs | 5.7x |
+| `small_snippet` | 14.0 µs | 0.74 µs | 18.9x |
 
 **Template inheritance** (4924 real view combinations, from XML to XML):
 
 | implementation | time | vs lxml |
 |---|---:|---:|
-| Odoo (Python + lxml) | 0.97 s | 1x |
-| `qweb_rs.apply_inheritance` | 0.46 s | 2.13x |
-| WASM `applyInheritanceServer` in Node | 0.84 s | 1.16x |
+| Odoo (Python + lxml) | 0.98 s | 1x |
+| `qweb_rs.apply_inheritance` | 0.44 s | 2.23x |
+| WASM `applyInheritanceServer` in Node | 0.62 s | 1.59x |
 
-**End to end**, on Odoo website pages, the gain is only 2% to 8%: routing, the
-ORM, the database and the HTTP stack dominate. It matters more for heavy
-templates such as large reports, mass mailings or long lists.
+**End to end**, on Odoo website pages, the gain is at most 8% (the lightest
+pages are equal within the noise): routing, the ORM, the database and the
+HTTP stack dominate. It matters more for heavy templates such as large
+reports, mass mailings or long lists.
 
 **In the browser**, inheritance through WASM is slightly slower than the JS
-implementation (about 158 ms against 135 ms for 1390 templates), because Owl
+implementation (about 154 ms against 137 ms for 1390 templates), because Owl
 needs a DOM and every result has to be copied back into it. The point of the
 WASM backend there is to share one implementation with the server.
 
