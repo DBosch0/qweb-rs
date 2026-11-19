@@ -1999,6 +1999,7 @@ fn apply_inheritance(
 }
 
 /// The extension module.
+#[allow(clippy::used_underscore_items)]
 #[pymodule]
 fn _qweb_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(apply_inheritance, m)?)?;
