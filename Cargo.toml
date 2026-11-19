@@ -36,6 +36,15 @@ panic = "abort"
 # convention of its glue. scripts/build_wasm.sh drops the name section instead.
 strip = "debuginfo"
 
+# The two crates where inheritance spends its time (XML parser, serializer,
+# XPath, DOM) at full speed: -10 to -13% in Node for +27 KB gzipped (+10%).
+# opt-level = 3 for every crate gives the same speed for +71 KB (2026-11-19).
+[profile.wasm.package.qweb-core]
+opt-level = 3
+
+[profile.wasm.package.qweb-inherit]
+opt-level = 3
+
 [workspace.lints.rust]
 missing_docs = "warn"
 missing_debug_implementations = "warn"

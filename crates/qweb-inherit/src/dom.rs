@@ -731,9 +731,25 @@ fn json_opt(s: Option<&str>, out: &mut String) {
 
 /// `JSON.stringify(string)`.
 pub fn json_str(s: &str, out: &mut String) {
+    /// Bytes that `JSON.stringify` escapes: controls, `"` and `\\`.
+    static ESCAPED: [bool; 256] = {
+        let mut t = [false; 256];
+        let mut i = 0;
+        while i < 0x20 {
+            t[i] = true;
+            i += 1;
+        }
+        t[b'"' as usize] = true;
+        t[b'\\' as usize] = true;
+        t
+    };
     out.push('"');
     let mut start = 0;
     for (i, b) in s.bytes().enumerate() {
+        // One load per byte: the common case is a byte copied as is.
+        if !ESCAPED[usize::from(b)] {
+            continue;
+        }
         let rep = match b {
             b'"' => "\\\"",
             b'\\' => "\\\\",

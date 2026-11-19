@@ -616,8 +616,23 @@ pub fn escape_xml_text(s: &str, out: &mut String) {
 
 /// libxml2 attribute value escaping.
 pub fn escape_xml_attr(s: &str, out: &mut String) {
+    /// Bytes escaped in attribute values.
+    static ESCAPED: [bool; 256] = {
+        let mut t = [false; 256];
+        let special = b"&<>\"\n\r\t";
+        let mut i = 0;
+        while i < special.len() {
+            t[special[i] as usize] = true;
+            i += 1;
+        }
+        t
+    };
     let mut last = 0;
     for (i, b) in s.bytes().enumerate() {
+        // One load per byte: the common case is a byte copied as is.
+        if !ESCAPED[usize::from(b)] {
+            continue;
+        }
         let rep = match b {
             b'&' => "&amp;",
             b'<' => "&lt;",
@@ -669,6 +684,12 @@ struct Parser<'a> {
     raw_attrs: Vec<(&'a str, XStr)>,
 }
 
+/// Number of `\n` in `b`. A counting loop (vectorised natively) beats
+/// `memchr_iter`, which makes one call per line.
+fn count_newlines(b: &[u8]) -> u32 {
+    b.iter().map(|&c| u32::from(c == b'\n')).sum()
+}
+
 fn is_name_end(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'/' | b'>' | b'=' | b'?')
 }
@@ -697,7 +718,7 @@ impl<'a> Parser<'a> {
     /// call, so a whole parse scans the input once.
     fn node_line(&mut self) -> u32 {
         let skipped = &self.b[self.line_pos..self.pos];
-        self.line += memchr::memchr_iter(b'\n', skipped).count() as u32;
+        self.line += count_newlines(skipped);
         self.line_pos = self.pos;
         self.line
     }
@@ -1032,14 +1053,17 @@ impl<'a> Parser<'a> {
             return self.err("AttValue: ' expected");
         };
         let raw = &self.src[start..end];
-        if raw.contains('<') {
-            return self.err("Unescaped '<' not allowed in attributes values");
-        }
         self.value.clear();
-        decode_text(raw, &mut self.value, true).map_err(|m| XmlError {
-            message: m,
-            line: self.error_line(),
-        })?;
+        // decode_text stops at a '<'; any '<' takes precedence over an entity error.
+        if let Err(m) = decode_text(raw, &mut self.value, true) {
+            if raw.contains('<') {
+                return self.err("Unescaped '<' not allowed in attributes values");
+            }
+            return Err(XmlError {
+                message: m,
+                line: self.error_line(),
+            });
+        }
         self.advance(end + 1 - self.pos);
         Ok(XStr::from(self.value.as_str()))
     }
@@ -1110,6 +1134,7 @@ fn decode_text(raw: &str, out: &mut String, attr: bool) -> Result<(), String> {
                 i += 1;
                 start = i;
             }
+            b'<' if attr => return Err(String::new()),
             b'\n' | b'\t' if attr => {
                 out.push_str(&raw[start..i]);
                 out.push(' ');
@@ -1148,6 +1173,25 @@ mod tests {
         assert_eq!(a.get("t"), Some("\r\t "));
         assert_eq!(a.get("u"), Some("x y"));
         assert_eq!(a.text.as_deref(), Some("&lt;<&>\n"));
+    }
+
+    #[test]
+    fn attr_errors() {
+        let msg = |src: &str| Document::parse(src).unwrap_err().message;
+        let lt = "Unescaped '<' not allowed in attributes values";
+        // A '<' anywhere in the value wins over an earlier entity error.
+        assert_eq!(msg("<a x='<'/>"), lt);
+        assert_eq!(msg("<a x='&bogus;<'/>"), lt);
+        assert_eq!(msg("<a x='&lt<'/>"), lt);
+        assert_eq!(msg("<a x='&bogus;'/>"), "Entity 'bogus' not defined");
+        assert_eq!(msg("<a x='&lt'/>"), "EntityRef: expecting ';'");
+        assert_eq!(
+            Document::parse("<a x='&lt;&#10;'/>")
+                .unwrap()
+                .node(0)
+                .get("x"),
+            Some("<\n")
+        );
     }
 
     #[test]

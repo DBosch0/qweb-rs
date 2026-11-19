@@ -20,6 +20,8 @@ mkdir -p "$OUT"
 # Drop the function names (about 33 KB gzipped) and the producers section.
 wasm-bindgen --target web --remove-name-section --remove-producers-section --out-dir "$OUT/web" "$WASM"
 wasm-bindgen --target nodejs --remove-name-section --remove-producers-section --out-dir "$OUT/node" "$WASM"
+# Long string arguments in one TextEncoder.encodeInto (see the script).
+node scripts/patch_wasm_glue.mjs "$OUT/web/qweb_wasm.js" "$OUT/node/qweb_wasm.js"
 # The package is "type": "module"; the nodejs glue is CommonJS.
 echo '{ "type": "commonjs" }' > "$OUT/node/package.json"
 
